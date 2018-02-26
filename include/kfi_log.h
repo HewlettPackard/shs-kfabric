@@ -39,31 +39,34 @@
 #define MODULE_NAME "KFI"
 #endif
 
-#define LOG_DEBUG(fmt, ... ) printk(KERN_DEBUG "%s - %s:%d " fmt "\n", \
-	MODULE_NAME, __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) pr_debug("%s - %s:%d " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
-#define LOG_DEFAULT(fmt, ... ) printk(KERN_DEFAULT "%s: " fmt "\n", \
+#define LOG_DEFAULT(fmt, ...) pr_default("%s: " fmt "\n", \
 	MODULE_NAME, ##__VA_ARGS__)
 
-#define LOG_INFO(fmt, ... ) printk(KERN_INFO "%s: " fmt "\n", \
+#define LOG_INFO(fmt, ...) pr_info("%s: " fmt "\n", \
 	MODULE_NAME, ##__VA_ARGS__)
 
-#define LOG_NOTICE(fmt, ... ) printk(KERN_NOTICE "%s: " fmt "\n", \
+#define LOG_NOTICE(fmt, ...) pr_notice("%s: " fmt "\n", \
 	MODULE_NAME, ##__VA_ARGS__)
 
-#define LOG_WARN(fmt, ... ) printk(KERN_WARNING "%s: " fmt "\n", \
-	MODULE_NAME, ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...) pr_warn("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
-#define LOG_ERR(fmt, ... ) printk(KERN_ERR "%s: " fmt "\n", \
-	MODULE_NAME, ##__VA_ARGS__)
+#define LOG_ERR(fmt, ...) pr_err("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
-#define LOG_CRIT(fmt, ... ) printk(KERN_CRIT "%s: " fmt "\n", \
-	MODULE_NAME, ##__VA_ARGS__)
+#define LOG_ERR_RL(fmt, ...) pr_err_ratelimited("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
-#define LOG_ALERT(fmt, ... ) printk(KERN_ALERT "%s: " fmt "\n", \
-	MODULE_NAME, ##__VA_ARGS__)
+#define LOG_CRIT(fmt, ...) pr_crit("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
-#define LOG_EMERG(fmt, ... ) printk(KERN_EMERG "%s: " fmt "\n", \
-	MODULE_NAME, ##__VA_ARGS__)
+#define LOG_ALERT(fmt, ...) pr_alert("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
+
+#define LOG_EMERG(fmt, ...) pr_emerg("%s - %s:%d: " fmt "\n", \
+	MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 
 #endif /* _KFI_LOG_H_ */

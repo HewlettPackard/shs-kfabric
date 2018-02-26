@@ -1,0 +1,79 @@
+<?xml version="1.0" ?>
+<configuration xmlns="http://svndownstream.us.cray.com" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <stream type="obs" xsi:type="obsStreamType">
+        <project>
+            SCM_PROJECT:SCM_REPO:
+            <extracted refer="full-branch"/>
+        </project>
+        <sources>
+            <file>
+                <name>
+                    ./set_slingshot_version.sh
+                </name>
+                <oscfile type="exe"/>
+            </file>
+            <gitcmd>
+                <command>
+                    branch
+                </command>
+                <name>
+                    _branch
+                </name>
+                <extract group="3" name="version-path" pattern="\*\s((.*/)|)(.*$)"/>
+                <extract group="1" name="full-branch" pattern="\*\s+(.*$)"/>
+            </gitcmd>
+            <gitcmd>
+                <command>
+                    rev-parse --short
+                    <extracted refer="full-branch"/>
+                </command>
+                <name>
+                    _last_changed_rev
+                </name>
+            </gitcmd>
+            <gitcmd>
+                <command>
+                    rev-list --count HEAD --no-merges
+                </command>
+                <name>
+                    _commit_count
+                </name>
+                <extract group="1" name="commit-count" pattern="^(.*)$"/>
+            </gitcmd>
+            <gitcmd>
+                <command>
+                   config --get remote.`git remote`.url
+                </command>
+                <name>
+                    _url
+                </name>
+            </gitcmd>
+            <file>
+                <name>
+                    cray-kfabric.spec
+                </name>
+                <extract group="1" name="version" pattern="^[\s*]?Version\s*:\s*(\S+)"/>
+            </file>
+            <tarfile compression="gz">
+                <name>
+                    cray-kfabric-
+                    <extracted refer="version"/>
+                </name>
+                <exclusion pattern=".*\.spec$"/>
+                <tarinfo recursive="true">
+                    <name>
+                        .
+                    </name>
+                    <arcname>
+                        cray-kfabric-
+                        <extracted refer="version"/>
+                    </arcname>
+                </tarinfo>
+            </tarfile>
+        </sources>
+        <package>
+            cray-kfabric
+        </package>
+    </stream>
+</configuration>
+

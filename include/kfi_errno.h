@@ -212,22 +212,24 @@
 #endif	/* NOT_USED - clean */
 
 /* KFI specific return values: >= 256 */
+#define KFI_ERRNO_OFFSET	256
 
-#define KFI_EOTHER		256		/* Unspecified error */
-#define KFI_ETOOSMALL		257		/* Provided buffer is too
-						 * small */
-#define KFI_EOPBADSTATE		258		/* Operation not permitted in
-						 * current state */
-#define KFI_EAVAIL		259		/* Error available */
-#define KFI_EBADFLAGS		260		/* Flags not supported */
-#define KFI_ENOEQ		261		/* Missing or unavailable
-						 * event queue */
-#define KFI_EDOMAIN		262		/* Invalid resource domain */
-#define KFI_ENOCQ		263		/* Missing or unavailable
-						 * completion queue */
-#define KKFI_ECRC		264		/* CRC error */
-#define KKFI_ETRUNC		265		/* Truncation error */
-#define KKFI_ENOKEY		266		/* Required key not available */
+enum {
+	KFI_EOTHER	= KFI_ERRNO_OFFSET, /* Unspecified error */
+	KFI_ETOOSMALL	= 257, /* Provided buffer is too small */
+	KFI_EOPBADSTATE	= 258, /* Operation not permitted in current state */
+	KFI_EAVAIL	= 259, /* Error available */
+	KFI_EBADFLAGS	= 260, /* Flags not supported */
+	KFI_ENOEQ	= 261, /* Missing or unavailable event queue */
+	KFI_EDOMAIN	= 262, /* Invalid resource domain */
+	KFI_ENOCQ	= 263, /* Missing or unavailable completion queue */
+	KFI_ECRC	= 264, /* CRC error */
+	KFI_ETRUNC	= 265, /* Truncation error */
+	KFI_ENOKEY	= 266, /* Required key not available */
+	KFI_ENOAV	= 267, /* Missing or unavailable address vector */
+	KFI_EOVERRUN	= 268, /* Queue has been overrun */
+	FI_ERRNO_MAX
+};
 
 const char *kfi_strerror(int errnum);
 

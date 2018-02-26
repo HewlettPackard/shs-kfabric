@@ -1,0 +1,46 @@
+## Global options
+PACKAGE_NAME="@PACKAGE_NAME@"
+# Package version should change with each new version
+PACKAGE_VERSION="@PACKAGE_VERSION@"
+ 
+## SHS DKMS variables
+SHS_DKMS_PACKAGEROOT="$dkms_tree/$PACKAGE_NAME/$PACKAGE_VERSION"
+SHS_DKMS_BUILDROOT="$SHS_DKMS_PACKAGEROOT/build"
+
+# Fetch the Module.symvers for our dependencies, stored in the DKMS tree
+CXI_DRIVER_SYMVERS=${dkms_tree}/cray-cxi-driver/kernel-${kernelver}-${arch}/module/Module.symvers
+
+BUILD_DEPENDS=("cray-slingshot-base-link", "sl-driver", "cray-cxi-driver")
+
+SHS_MAKE_ARGS=" \
+        -C $kernel_source_dir \
+        M=${SHS_DKMS_BUILDROOT} \
+        NO_BUILD_TESTS=1 \
+        KCPPFLAGS='-I/usr/include' \
+        KBUILD_EXTRA_SYMBOLS=${CXI_DRIVER_SYMVERS} \
+"
+
+MAKE="'make' ${SHS_MAKE_ARGS} modules"
+CLEAN="make ${SHS_MAKE_ARGS} clean"
+AUTOINSTALL='yes'
+
+# Post-build hook to copy our Module.symvers into the DKMS tree so that other modules can build against it
+POST_BUILD="dkms.post_build.sh ${SHS_DKMS_BUILDROOT} ${SHS_DKMS_PACKAGEROOT}"
+
+#
+# kfabric.ko
+#
+BUILT_MODULE_LOCATION[0]=kfi
+DEST_MODULE_LOCATION[0]=/extra
+BUILT_MODULE_NAME[0]=kfabric
+DEST_MODULE_NAME[0]=kfabric
+STRIP[0]=no
+
+#
+# kfi_cxi.ko
+#
+BUILT_MODULE_LOCATION[1]=prov/cxi
+DEST_MODULE_LOCATION[1]=/extra
+BUILT_MODULE_NAME[1]=kfi_cxi
+DEST_MODULE_NAME[1]=kfi_cxi
+STRIP[1]=no

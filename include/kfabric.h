@@ -35,12 +35,13 @@
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/completion.h>
 
 #define KFI_DEFINE_HANDLE(name) struct name##_s { int dummy; }; \
-				typedef struct name##_s *name
+	typedef struct name##_s *name
 
 #define KFI_MAJOR_VERSION 1
-#define KFI_MINOR_VERSION 1
+#define KFI_MINOR_VERSION 5
 
 enum {
 	KFI_PATH_MAX		= 256,
@@ -96,6 +97,8 @@ typedef struct kfid *kfid_t;
 #define KFI_TAGGED		(1ULL << 3)
 #define KFI_ATOMIC		(1ULL << 4)
 #define KFI_ATOMICS		KFI_ATOMIC
+#define KFI_MULTICAST		(1ULL << 5)
+#define KFI_TAGGED_RMA		(1ULL << 6)
 
 #define KFI_READ		(1ULL << 8)
 #define KFI_WRITE		(1ULL << 9)
@@ -118,20 +121,14 @@ typedef struct kfid *kfid_t;
 #define KFI_INJECT_COMPLETE	(1ULL << 26)
 #define KFI_TRANSMIT_COMPLETE	(1ULL << 27)
 #define KFI_DELIVERY_COMPLETE	(1ULL << 28)
+#define KFI_AFFINITY		(1ULL << 29)
+#define KFI_COMMIT_COMPLETE	(1ULL << 30)
 
-/* KFI compat - start*/
-#define KFI_CANCEL		(1ULL << 29)
-#define KFI_BUFFERED_RECV	(1ULL << 30)
-
-// TODO(rm) #define KFI_REMOTE_SIGNAL	(1ULL << 31)
-// TODO(rm) #define KFI_REMOTE_COMPLETE	(1ULL << 32)
-
-/* KFI compat - end */
-
-#define KFI_MR_PHYS_MEM		(1ULL << 51)  /* mr_reg/v() Physical addrs */
-#define KFI_MR_DMA_ADDR		(1ULL << 52)  /* mr_reg/v() DMA addrs */
-#define KFI_CQ_CAN_WAIT		(1ULL << 53)  /* kfi_cq_sread() can wait */
-/* kfi_getinfo()-specific flags/caps */
+#define KFI_RMA_PMEM		(1ULL << 49)
+#define KFI_SOURCE_ERR		(1ULL << 50)
+#define KFI_LOCAL_COMM		(1ULL << 51)
+#define KFI_REMOTE_COMM		(1ULL << 52)
+#define KFI_SHARED_AV		(1ULL << 53)
 #define KFI_PROV_ATTR_ONLY	(1ULL << 54)
 #define KFI_NUMERICHOST		(1ULL << 55)
 #define KFI_RMA_EVENT		(1ULL << 56)
@@ -148,16 +145,15 @@ enum {
 	KFI_SOCKADDR_IN,	/* struct sockaddr_in */
 	KFI_SOCKADDR_IN6,	/* struct sockaddr_in6 */
 	KFI_SOCKADDR_IB,	/* struct sockaddr_ib */
-	KFI_ADDR_PSMX,		/* uint64_t */
-	KFI_ADDR_OPA1,		/* struct kfi_addr_opa1 */
-	KFI_ADDR_GNI
+	KFI_ADDR_GNI,
+	KFI_ADDR_CXI
 };
 
 #define KFI_ADDR_UNSPEC		UINT64_MAX
 #define KFI_ADDR_NOTAVAIL	UINT64_MAX
+#define KFI_KEY_NOTAVAIL	UINT64_MAX
 #define KFI_SHARED_CONTEXT	UINT64_MAX
 typedef uint64_t		kfi_addr_t;
-KFI_DEFINE_HANDLE(kfi_connreq_t);
 
 /*
  * AV = Address Vector
@@ -169,11 +165,13 @@ enum kfi_av_type {
 	KFI_AV_TABLE
 };
 
-enum kfi_mr_mode {
-	KFI_MR_UNSPEC,
-	KFI_MR_BASIC,
-	KFI_MR_SCALABLE
-};
+/* MR flags */
+#define KFI_MR_LOCAL		(1 << 1)
+#define KFI_MR_RAW		(1 << 2)
+#define KFI_MR_VIRT_ADDR	(1 << 3)
+#define KFI_MR_PROV_KEY		(1 << 4)
+#define KFI_MR_RMA_EVENT	(1 << 5)
+#define KFI_MR_ENDPOINT		(1 << 6)
 
 enum kfi_progress {
 	KFI_PROGRESS_UNSPEC,
@@ -206,7 +204,7 @@ enum kfi_resource_mgmt {
 #define KFI_ORDER_SAR		(1 << 6)
 #define KFI_ORDER_SAW		(1 << 7)
 #define KFI_ORDER_SAS		(1 << 8)
-#define KFI_ORDER_STRICT		0x1FF
+#define KFI_ORDER_STRICT	0x1FF
 #define KFI_ORDER_DATA		(1 << 16)
 
 enum kfi_ep_type {
@@ -214,8 +212,8 @@ enum kfi_ep_type {
 	KFI_EP_MSG,
 	KFI_EP_DGRAM,
 	KFI_EP_RDM,
-	/* KFI_EP_RAW, */
-	/* KFI_EP_PACKET, */
+	KFI_EP_SOCK_STREAM,
+	KFI_EP_SOCK_DGRAM
 };
 
 /* Endpoint protocol
@@ -227,14 +225,41 @@ enum {
 	KFI_PROTO_RDMA_CM_IB_RC,
 	KFI_PROTO_IWARP,
 	KFI_PROTO_IB_UD,
-	KFI_PROTO_PSMX,
 	KFI_PROTO_UDP,
 	KFI_PROTO_SOCK_TCP,
-	KFI_PROTO_MXM,
 	KFI_PROTO_IWARP_RDM,
 	KFI_PROTO_IB_RDM,
-	KFI_PROTO_GNI
+	KFI_PROTO_GNI,
+	KFI_PROTO_CXI
 };
+
+/* IOV type for attr/msg variant functions. */
+enum kfi_iov_type {
+	KFI_KVEC = 1,
+	KFI_BVEC,
+};
+
+enum {
+	KFI_TC_UNSPEC = 0,
+	KFI_TC_DSCP = 0x100,
+	KFI_TC_LABEL = 0x200,
+	KFI_TC_BEST_EFFORT = KFI_TC_LABEL,
+	KFI_TC_LOW_LATENCY,
+	KFI_TC_DEDICATED_ACCESS,
+	KFI_TC_BULK_DATA,
+	KFI_TC_SCAVENGER,
+	KFI_TC_NETWORK_CTRL,
+};
+
+static inline uint32_t kfi_tc_dscp_set(uint8_t dscp)
+{
+	return ((uint32_t) dscp) | KFI_TC_DSCP;
+}
+
+static inline uint8_t kfi_tc_dscp_get(uint32_t tclass)
+{
+	return tclass & KFI_TC_DSCP ? (uint8_t) tclass : 0;
+}
 
 /* Mode bits */
 #define KFI_CONTEXT		(1ULL << 59)
@@ -242,6 +267,9 @@ enum {
 #define KFI_ASYNC_IOV		(1ULL << 57)
 #define KFI_RX_CQ_DATA		(1ULL << 56)
 #define KFI_LOCAL_MR		(1ULL << 55)
+#define KFI_NOTIFY_FLAGS_ONLY	(1ULL << 54)
+#define KFI_RESTRICTED_COMP	(1ULL << 53)
+#define KFI_CONTEXT2		(1ULL << 52)
 
 struct kfi_tx_attr {
 	uint64_t		caps;
@@ -253,6 +281,7 @@ struct kfi_tx_attr {
 	size_t			size;
 	size_t			iov_limit;
 	size_t			rma_iov_limit;
+	uint32_t		tclass;
 };
 
 struct kfi_rx_attr {
@@ -262,7 +291,6 @@ struct kfi_rx_attr {
 	uint64_t		msg_order;
 	uint64_t		comp_order;
 	size_t			total_buffered_recv;
-	size_t			total_buffered_recv_mtu;
 	size_t			size;
 	size_t			iov_limit;
 };
@@ -279,6 +307,8 @@ struct kfi_ep_attr {
 	uint64_t		mem_tag_format;
 	size_t			tx_ctx_cnt;
 	size_t			rx_ctx_cnt;
+	size_t			auth_key_size;
+	uint8_t			*auth_key;
 };
 
 struct kfi_domain_attr {
@@ -288,8 +318,8 @@ struct kfi_domain_attr {
 	enum kfi_progress	control_progress;
 	enum kfi_progress	data_progress;
 	enum kfi_resource_mgmt	resource_mgmt;
-	enum kfi_av_type		av_type;
-	enum kfi_mr_mode		mr_mode;
+	enum kfi_av_type	av_type;
+	int			mr_mode;
 	size_t			mr_key_size;
 	size_t			cq_data_size;
 	size_t			cq_cnt;
@@ -300,6 +330,15 @@ struct kfi_domain_attr {
 	size_t			max_ep_rx_ctx;
 	size_t			max_ep_stx_ctx;
 	size_t			max_ep_srx_ctx;
+	size_t			cntr_cnt;
+	size_t			mr_iov_limit;
+	uint64_t		caps;
+	uint64_t		mode;
+	uint8_t			*auth_key;
+	size_t			auth_key_size;
+	size_t			max_err_data;
+	size_t			mr_cnt;
+	uint32_t		tclass;
 };
 
 struct kfi_fabric_attr {
@@ -318,13 +357,12 @@ struct kfi_info {
 	size_t			dest_addrlen;
 	void			*src_addr;
 	void			*dest_addr;
-	kfi_connreq_t		connreq;
+	kfid_t			handle;
 	struct kfi_tx_attr	*tx_attr;
 	struct kfi_rx_attr	*rx_attr;
 	struct kfi_ep_attr	*ep_attr;
 	struct kfi_domain_attr	*domain_attr;
 	struct kfi_fabric_attr	*fabric_attr;
-	kfid_t			handle;
 };
 
 enum {
@@ -351,6 +389,8 @@ enum {
 
 struct kfi_eq_attr;
 struct kfi_wait_attr;
+typedef void (*kfi_comp_handler)(struct kfid_cq *cq, void *context);
+typedef void (*kfi_event_handler)(struct kfid_eq *eq, void *context);
 
 /* kfi_bind()-specific flags */
 #define KFI_SELECTIVE_COMPLETION (1ULL << 59)
@@ -377,9 +417,8 @@ struct kfid {
  * Retrieve the fabric info based on given hints. Can return a chain of multiple
  * kfi_info instances.
  */
-uint32_t kfi_version(void);
-int kfi_getinfo(uint32_t version, struct kfi_info *hints,
-		struct kfi_info **info);
+int kfi_getinfo(uint32_t version, const char *node, const char *service,
+		uint64_t flags, struct kfi_info *hints, struct kfi_info **info);
 
 /*
  * All fabric info instances returned from kfi_getinfo() should be recycled
@@ -387,7 +426,7 @@ int kfi_getinfo(uint32_t version, struct kfi_info *hints,
  * all instances in the chain will be freed.
  */
 void kfi_freeinfo(struct kfi_info *info);
-
+struct kfi_info *kfi_allocinfo(void);
 struct kfi_info *kfi_dupinfo(const struct kfi_info *info);
 
 struct kfi_ops_fabric {
@@ -397,7 +436,8 @@ struct kfi_ops_fabric {
 	int	(*passive_ep)(struct kfid_fabric *fabric, struct kfi_info *info,
 			struct kfid_pep **pep, void *context);
 	int	(*eq_open)(struct kfid_fabric *fabric, struct kfi_eq_attr *attr,
-			struct kfid_eq **eq, void *context);
+			struct kfid_eq **eq, kfi_event_handler event_handler,
+			void *context);
 	int	(*wait_open)(struct kfid_fabric *fabric,
 			struct kfi_wait_attr *attr, struct kfid_wait **waitset);
 };
@@ -423,6 +463,21 @@ struct kfi_alias {
 	uint64_t	flags;
 };
 
+struct kfi_mr_raw_attr {
+	uint64_t	flags;
+	uint64_t	*base_addr;
+	uint8_t		*raw_key;
+	size_t		*key_size;
+};
+
+struct kfi_mr_map_raw {
+	uint64_t	flags;
+	uint64_t	base_addr;
+	uint8_t		*raw_key;
+	size_t		key_size;
+	uint64_t	*key;
+};
+
 /* control commands */
 enum {
 	KFI_GETFIDFLAG,		/* uint64_t flags */
@@ -433,6 +488,13 @@ enum {
 	KFI_GETWAIT,		/* void * wait object */
 	KFI_ENABLE,		/* NULL */
 	KFI_BACKLOG,		/* integer * */
+	KFI_GET_RAW_MR,		/* kfi_mr_raw_attr */
+	KFI_MAP_RAW_MR,		/* kfi_mr_map_raw */
+	KFI_UNMAP_KEY,		/* uint64_t key */
+	KFI_QUEUE_WORK,		/* struct kfi_deferred_work */
+	KFI_CANCEL_WORK,	/* struct kfi_deferred_work */
+	KFI_FLUSH_WORK,		/* NULL */
+	KFI_REFRESH		/* mr: kfi_mr_modify */
 };
 
 static inline int kfi_control(struct kfid *fid, int command, void *arg)
@@ -444,6 +506,7 @@ static inline int kfi_alias(struct kfid *fid, struct kfid **alias_fid,
 			   uint64_t flags)
 {
 	struct kfi_alias alias;
+
 	alias.fid = alias_fid;
 	alias.flags = flags;
 	return kfi_control(fid, KFI_ALIAS, &alias);
@@ -477,7 +540,9 @@ enum kfi_type {
 	KFI_TYPE_ATOMIC_OP,
 	KFI_TYPE_VERSION,
 	KFI_TYPE_EQ_EVENT,
-	KFI_TYPE_CQ_EVENT_FLAGS
+	KFI_TYPE_CQ_EVENT_FLAGS,
+	KFI_TYPE_MR_MODE,
+	KFI_TYPE_OP_TYPE
 };
 
 char *kfi_tostr(const void *data, enum kfi_type datatype);
@@ -503,6 +568,10 @@ void kfi_freeparams(struct kfi_param *params);
 
 struct kfi_context {
 	void	*internal[4];
+};
+
+struct kfi_context2 {
+	void	*internal[8];
 };
 
 #else /* KFABRIC_DIRECT */

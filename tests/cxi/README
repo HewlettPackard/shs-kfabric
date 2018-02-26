@@ -1,0 +1,38 @@
+The leaf directories should each contain a loadable kernel module to test some
+functionality of the CXI provider.
+
+At this point, all test modules need to be loaded by hand.
+
+The following tests are considered passed if the module loads:
+1. single_client/getinfo/test_getinfo.ko
+2. single_client/fabric/test_fabric.ko
+3. single_client/eq/test_eq.ko
+4. single_client/domain/test_domain.ko
+5. single_client/av/test_av.ko
+6. single_client/cq/test_cq.ko
+7. single_client/sep_alloc_rx/test_sep_alloc_rx.ko
+8. single_client/sep_alloc_tx/test_sep_alloc_tx.ko
+9. single_client/sep_attr/test_sep_attr.ko
+10. single_client/sep_av/test_sep_av.ko
+11. single_client/sep_cq/test_sep_cq.ko
+12. single_client/sep_cq_rx/test_sep_cq_rx.ko
+13. single_client/sep_cq_tx/test_sep_cq_tx.ko
+14. single_client/sep_domain/test_sep_domain.ko
+15. single_client/sep_enable/test_sep_enable.ko
+16. single_client/sep_enable_rx/test_sep_enable_rx.ko
+17. single_client/sep_enable_tx/test_sep_enable_tx.ko
+18. single_client/sep_multi_ep/test_sep_multi_ep.ko
+
+The following tests require the examination of the system buffer to determine
+if the tests have passed.
+1. single_client/eq_thread/test_eq_thread.ko
+	NOTE: This module MUST be unloaded for a pass or fail status to be
+	reported.
+2. single_client/cq_thread/test_cq_thread.ko
+	NOTE: This module MUST be unloaded for a pass or fail status to be
+	reported.
+
+The above tests are setup to run with the sharness test framework. Run:
+	make check
+
+In addition, the dmesg output may be placed in ./sharness/tmptests/*.dmesg.txt.

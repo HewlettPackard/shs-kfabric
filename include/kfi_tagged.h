@@ -37,11 +37,15 @@
 #include <kfi_endpoint.h>
 
 
-#define KFI_CLAIM		(1ULL << 0)
-#define KFI_DISCARD		KFI_CANCEL
+#define KFI_CLAIM		(1ULL << 59)
+#define KFI_DISCARD		(1ULL << 58)
 
 struct kfi_msg_tagged {
-	const struct kvec	*msg_iov;
+	enum kfi_iov_type	type;
+	union {
+		const struct kvec	*msg_iov;
+		const struct bio_vec	*msg_biov;
+	};
 	void			**desc;
 	size_t			iov_count;
 	kfi_addr_t		addr;
@@ -59,6 +63,9 @@ struct kfi_ops_tagged {
 	ssize_t (*recvv)(struct kfid_ep *ep, const struct kvec *iov,
 			void **desc, size_t count, kfi_addr_t src_addr,
 			uint64_t tag, uint64_t ignore, void *context);
+	ssize_t (*recvbv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  uint64_t tag, uint64_t ignore, void *context);
 	ssize_t (*recvmsg)(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 			uint64_t flags);
 	ssize_t (*send)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -67,6 +74,9 @@ struct kfi_ops_tagged {
 	ssize_t (*sendv)(struct kfid_ep *ep, const struct kvec *iov,
 			void **desc, size_t count, kfi_addr_t dest_addr,
 			uint64_t tag, void *context);
+	ssize_t (*sendbv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			  void **desc, size_t count, kfi_addr_t dest_addr,
+			  uint64_t tag, void *context);
 	ssize_t (*sendmsg)(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 			uint64_t flags);
 	ssize_t	(*inject)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -76,9 +86,6 @@ struct kfi_ops_tagged {
 			uint64_t tag, void *context);
 	ssize_t	(*injectdata)(struct kfid_ep *ep, const void *buf, size_t len,
 			uint64_t data, kfi_addr_t dest_addr, uint64_t tag);
-	ssize_t (*search)(struct kfid_ep *ep, uint64_t *tag, uint64_t ignore,
-			uint64_t flags, kfi_addr_t *src_addr, size_t *len,
-			void *context);
 };
 
 
@@ -102,6 +109,15 @@ kfi_trecvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 }
 
 static inline ssize_t
+kfi_trecvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	    size_t count, kfi_addr_t src_addr, uint64_t tag, uint64_t ignore,
+	    void *context)
+{
+	return ep->tagged->recvbv(ep, biov, desc, count, src_addr, tag, ignore,
+				  context);
+}
+
+static inline ssize_t
 kfi_trecvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 	     uint64_t flags)
 {
@@ -120,6 +136,14 @@ kfi_tsendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 	   size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
 {
 	return ep->tagged->sendv(ep, iov, desc, count, dest_addr, tag, context);
+}
+
+static inline ssize_t
+kfi_tsendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	    size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
+{
+	return ep->tagged->sendbv(ep, biov, desc, count, dest_addr, tag,
+				  context);
 }
 
 static inline ssize_t
@@ -149,14 +173,6 @@ kfi_tinjectdata(struct kfid_ep *ep, const void *buf, size_t len,
 		uint64_t data, kfi_addr_t dest_addr, uint64_t tag)
 {
 	return ep->tagged->injectdata(ep, buf, len, data, dest_addr, tag);
-}
-
-static inline ssize_t
-kfi_tsearch(struct kfid_ep *ep, uint64_t *tag, uint64_t ignore, uint64_t flags,
-	    kfi_addr_t *src_addr, size_t *len, void *context)
-{
-	return ep->tagged->search(ep, tag, ignore, flags, src_addr,
-				  len, context);
 }
 
 

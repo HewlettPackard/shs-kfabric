@@ -1,0 +1,10 @@
+*       @hpe/hpc-shs-ss11-codereviewers  @hpe/hpc-shs-kfabric-codereviewers
+Jenkinsfile* @hpe/hpc-shs-cassini-enablement
+build.sh @hpe/hpc-shs-cassini-enablement
+dkms* @hpe/hpc-shs-cassini-enablement
+rpm_build* @hpe/hpc-shs-cassini-enablement
+runBuildPrep* @hpe/hpc-shs-cassini-enablement
+set_slingshot_version.sh @hpe/hpc-shs-cassini-enablement
+zypper-local.sh @hpe/hpc-shs-cassini-enablement
+build.sh	@hpe/hpc-shs-cassini-enablement
+run.*	@hpe/hpc-shs-cassini-enablement

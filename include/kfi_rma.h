@@ -44,7 +44,11 @@ struct kfi_rma_iov {
 };
 
 struct kfi_msg_rma {
-	const struct kvec	 *msg_iov;
+	enum kfi_iov_type	 type;
+	union {
+		const struct kvec	 *msg_iov;
+		const struct bio_vec	 *msg_biov;
+	};
 	void			 **desc;
 	size_t			 iov_count;
 	kfi_addr_t		 addr;
@@ -62,6 +66,9 @@ struct kfi_ops_rma {
 	ssize_t	(*readv)(struct kfid_ep *ep, const struct kvec *iov,
 			 void **desc, size_t count, kfi_addr_t src_addr,
 			 uint64_t addr, uint64_t key, void *context);
+	ssize_t	(*readbv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  uint64_t addr, uint64_t key, void *context);
 	ssize_t	(*readmsg)(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 			uint64_t flags);
 	ssize_t	(*write)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -70,6 +77,9 @@ struct kfi_ops_rma {
 	ssize_t	(*writev)(struct kfid_ep *ep, const struct kvec *iov,
 			 void **desc, size_t count, kfi_addr_t dest_addr,
 			 uint64_t addr, uint64_t key, void *context);
+	ssize_t	(*writebv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			   void **desc, size_t count, kfi_addr_t dest_addr,
+			   uint64_t addr, uint64_t key, void *context);
 	ssize_t	(*writemsg)(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 			    uint64_t flags);
 	ssize_t	(*inject)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -102,6 +112,15 @@ kfi_readv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 }
 
 static inline ssize_t
+kfi_readbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
+	   void *context)
+{
+	return ep->rma->readbv(ep, biov, desc, count, src_addr, addr, key,
+			      context);
+}
+
+static inline ssize_t
 kfi_readmsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg, uint64_t flags)
 {
 	return ep->rma->readmsg(ep, msg, flags);
@@ -122,6 +141,15 @@ kfi_writev(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 {
 	return ep->rma->writev(ep, iov, desc, count, dest_addr, addr, key,
 			       context);
+}
+
+static inline ssize_t
+kfi_writebv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	    size_t count, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+	    void *context)
+{
+	return ep->rma->writebv(ep, biov, desc, count, dest_addr, addr, key,
+				context);
 }
 
 static inline ssize_t

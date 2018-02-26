@@ -45,9 +45,32 @@
 #include <kfi_atomic.h>
 #include <kfi_tagged.h>
 #include <kfi_enosys.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
 #include <rdma/ib.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/rdma_cm.h>
+#include <rdma/ib_cm.h>
+#include <linux/hmm.h>
+#include <linux/version.h>
+
+/* TODO: Implement proper autoconf check. For now, assume if HMM_PFN_SHIFT is
+ * defined, the system is SLES 15 SP0.
+ */
+#ifdef HMM_PFN_SHIFT
+#define SLES15_SP0
+#else
+#define SLES15_SP1
+#include <rdma/ib_cache.h>
+#endif
+
+#ifndef RHEL_MAJOR
+#define RHEL_MAJOR 0
+#endif
+
+#ifndef RHEL_MINOR
+#define RHEL_MINOR 0
+#endif
 
 MODULE_AUTHOR("Frank Yang, Chen Zhao");
 MODULE_DESCRIPTION("Open Fabric Interface Verbs Provider");
@@ -69,15 +92,27 @@ enum {
 #define VERBS_IWARP_FABRIC "Ethernet-iWARP"
 
 #define VERBS_CAPS (KFI_MSG | KFI_RMA | KFI_ATOMICS | KFI_READ | KFI_WRITE | \
-                    KFI_SEND | KFI_RECV | KFI_REMOTE_READ | KFI_REMOTE_WRITE)
+		    KFI_SEND | KFI_RECV | KFI_REMOTE_READ | KFI_REMOTE_WRITE)
 #define VERBS_MODE (KFI_LOCAL_MR)
 #define VERBS_TX_OP_FLAGS (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)
 #define VERBS_TX_OP_FLAGS_IWARP (KFI_COMPLETION)
 #define VERBS_TX_MODE VERBS_MODE
 #define VERBS_RX_MODE (KFI_LOCAL_MR | KFI_RX_CQ_DATA)
 #define VERBS_MSG_ORDER (KFI_ORDER_RAR | KFI_ORDER_RAW | KFI_ORDER_RAS | \
-                         KFI_ORDER_WAW | KFI_ORDER_WAS | KFI_ORDER_SAW | \
-                         KFI_ORDER_SAS )
+			 KFI_ORDER_WAW | KFI_ORDER_WAS | KFI_ORDER_SAW | \
+			 KFI_ORDER_SAS)
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 18, 0)
+#define IB_DESTROY_CQ ib_destroy_cq
+#else
+#define IB_DESTROY_CQ(cq) ib_destroy_cq_user(cq, NULL)
+#endif
+
+#if defined(CONFIG_SUSE_PRODUCT_SLE) && CONFIG_SUSE_VERSION == 15 && \
+	CONFIG_SUSE_PATCHLEVEL == 3
+#define SLES15_SP3
+#endif
+
 
 /* IB Verbs provider declarations */
 
@@ -102,6 +137,8 @@ struct kfi_ibv_eq {
 	struct mutex            mut;
 	wait_queue_head_t       poll_wait;
 	struct list_head        event_list;
+	enum kfi_wait_obj	wait_obj;
+	struct kfid_wait	*wait_set;
 };
 
 struct kfi_ibv_event {
@@ -135,6 +172,8 @@ struct kfi_ibv_cq {
 	uint64_t                flags;
 	struct ib_wc            wc;
 	struct mutex            mut;
+	enum kfi_wait_obj	wait_obj;
+	struct kfid_wait	*wait_set;
 };
 
 struct kfi_ibv_mem_desc {
@@ -144,6 +183,12 @@ struct kfi_ibv_mem_desc {
 	void                    *vaddr;
 	uint64_t                dma_addr;
 	size_t                  dma_len;
+	struct scatterlist	*frags;
+	u32			global_lkey;
+	u32			nfrags;
+	int			access;
+	bool			mem_mapped;
+	bool			mem_enabled;
 };
 
 struct kfi_ibv_ep {
@@ -179,7 +224,7 @@ static const uint32_t def_tx_ctx_size = 384;
 static const uint32_t def_rx_ctx_size = 384;
 static const uint32_t def_tx_iov_limit = 4;
 static const uint32_t def_rx_iov_limit = 4;
-static const uint32_t def_inject_size = 0;
+static const uint32_t def_inject_size;
 
 static const struct kfi_domain_attr verbs_domain_attr = {
 	.threading              = KFI_THREAD_SAFE,
@@ -226,11 +271,11 @@ static const u8 def_max_init_depth = 1;
 
 /* Provider support ops */
 
-static int kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints,
-                struct kfi_info **info);
+static int kfi_ibv_getinfo(uint32_t version, const char *node,
+			   const char *service, uint64_t flags,
+			   struct kfi_info *hints, struct kfi_info **info);
 static int kfi_ibv_fabric(struct kfi_fabric_attr *attr,
-                struct kfid_fabric **fabric, void *context);
-static void kfi_ibv_freeinfo(struct kfi_info *info);
+			  struct kfid_fabric **fabric, void *context);
 static void kfi_ibv_cleanup(void);
 
 static struct kfi_provider ibv_prov = {
@@ -239,18 +284,17 @@ static struct kfi_provider ibv_prov = {
 	.kfi_version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION),
 	.kgetinfo = kfi_ibv_getinfo,
 	.kfabric = kfi_ibv_fabric,
-	.kfreeinfo = kfi_ibv_freeinfo,
 	.cleanup = kfi_ibv_cleanup,
 };
 
 /* Fabric support ops */
-
 static int kfi_ibv_domain(struct kfid_fabric *fabric, struct kfi_info *info,
-                struct kfid_domain **domain, void *context);
+			  struct kfid_domain **domain, void *context);
 static int kfi_ibv_passive_ep(struct kfid_fabric *fabric, struct kfi_info *info,
-                struct kfid_pep **pep, void *context);
+			      struct kfid_pep **pep, void *context);
 static int kfi_ibv_eq_open(struct kfid_fabric *fabric, struct kfi_eq_attr *attr,
-                struct kfid_eq **eq, void *context);
+			   struct kfid_eq **eq, kfi_event_handler event_handler,
+			   void *context);
 
 static struct kfi_ops_fabric kfi_ibv_fabric_ops = {
 	.domain = kfi_ibv_domain,
@@ -268,7 +312,6 @@ static struct kfi_ops kfi_ibv_fabric_fid_ops = {
 };
 
 /* Domain support ops */
-
 static int kfi_ibv_domain_close(kfid_t fid);
 
 static struct kfi_ops kfi_ibv_domain_fid_ops = {
@@ -279,9 +322,10 @@ static struct kfi_ops kfi_ibv_domain_fid_ops = {
 };
 
 static int kfi_ibv_cq_open(struct kfid_domain *domain, struct kfi_cq_attr *attr,
-                struct kfid_cq **cq, void *context);
+			   struct kfid_cq **cq, kfi_comp_handler comp_handler,
+			   void *context);
 static int kfi_ibv_endpoint(struct kfid_domain *domain, struct kfi_info *info,
-                struct kfid_ep **ep, void *context);
+			    struct kfid_ep **ep, void *context);
 
 static struct kfi_ops_domain kfi_ibv_domain_ops = {
 	.cq_open = kfi_ibv_cq_open,
@@ -289,9 +333,9 @@ static struct kfi_ops_domain kfi_ibv_domain_ops = {
 };
 
 static int kfi_ibv_mr_reg(struct kfid *fid, const void *buf, size_t len,
-                uint64_t access, uint64_t offset, uint64_t requested_key,
-                uint64_t flags, struct kfid_mr **mr, void *context,
-                uint64_t *dma_addr);
+			  uint64_t access, uint64_t offset,
+			  uint64_t requested_key, uint64_t flags,
+			  struct kfid_mr **mr, void *context);
 
 static struct kfi_ops_mr kfi_ibv_domain_mr_ops = {
 	.reg = kfi_ibv_mr_reg,
@@ -309,7 +353,6 @@ static struct kfi_ops kfi_ibv_mr_fi_ops = {
 };
 
 /* EQ support ops */
-
 static int kfi_ibv_eq_close(kfid_t fid);
 
 static struct kfi_ops kfi_ibv_eq_fid_ops = {
@@ -320,13 +363,15 @@ static struct kfi_ops kfi_ibv_eq_fid_ops = {
 };
 
 static ssize_t kfi_ibv_eq_read(struct kfid_eq *eq, uint32_t *event, void *buf,
-                size_t len, uint64_t flags);
+			       size_t len, uint64_t flags);
 static ssize_t kfi_ibv_eq_readerr(struct kfid_eq *eq,
-                struct kfi_eq_err_entry *entry, uint64_t flags);
+				  struct kfi_eq_err_entry *entry,
+				  uint64_t flags);
 static ssize_t kfi_ibv_eq_sread(struct kfid_eq *eq, uint32_t *event, void *buf,
-                size_t len, int timeout, uint64_t flags);
-static const char * kfi_ibv_eq_strerror(struct kfid_eq *eq, int prov_errno,
-                const void *err_data, char *buf, size_t len);
+				size_t len, int timeout, uint64_t flags);
+static const char *kfi_ibv_eq_strerror(struct kfid_eq *eq, int prov_errno,
+				       const void *err_data, char *buf,
+				       size_t len);
 
 static struct kfi_ops_eq kfi_ibv_eq_ops = {
 	.read = kfi_ibv_eq_read,
@@ -337,7 +382,6 @@ static struct kfi_ops_eq kfi_ibv_eq_ops = {
 };
 
 /* CQ support ops */
-
 static int kfi_ibv_cq_close(kfid_t fid);
 
 static struct kfi_ops kfi_ibv_cq_fid_ops = {
@@ -348,13 +392,15 @@ static struct kfi_ops kfi_ibv_cq_fid_ops = {
 };
 
 static ssize_t kfi_ibv_cq_read_context(struct kfid_cq *cq, void *buf,
-                size_t count);
+				       size_t count);
 static ssize_t kfi_ibv_cq_readerr(struct kfid_cq *cq,
-                struct kfi_cq_err_entry *entry, uint64_t flags);
+				  struct kfi_cq_err_entry *entry,
+				  uint64_t flags);
 static ssize_t kfi_ibv_cq_sread(struct kfid_cq *cq, void *buf, size_t count,
-                const void *cond, int timeout);
-static const char * kfi_ibv_cq_strerror(struct kfid_cq *eq, int prov_errno,
-                const void *err_data, char *buf, size_t len);
+				const void *cond, int timeout);
+static const char *kfi_ibv_cq_strerror(struct kfid_cq *eq, int prov_errno,
+				       const void *err_data, char *buf,
+				       size_t len);
 
 static struct kfi_ops_cq kfi_ibv_cq_context_ops = {
 	.read = kfi_ibv_cq_read_context,
@@ -378,7 +424,8 @@ static struct kfi_ops_cq kfi_ibv_cq_msg_ops = {
 	.strerror = kfi_ibv_cq_strerror,
 };
 
-static ssize_t kfi_ibv_cq_read_data(struct kfid_cq *cq, void *buf, size_t count);
+static ssize_t kfi_ibv_cq_read_data(struct kfid_cq *cq, void *buf,
+				    size_t count);
 
 static struct kfi_ops_cq kfi_ibv_cq_data_ops = {
 	.read = kfi_ibv_cq_read_data,
@@ -391,7 +438,6 @@ static struct kfi_ops_cq kfi_ibv_cq_data_ops = {
 };
 
 /* PEP support ops */
-
 static int kfi_ibv_pep_close(kfid_t fid);
 static int kfi_ibv_pep_bind(kfid_t fid, struct kfid *bfid, uint64_t flags);
 
@@ -408,14 +454,12 @@ static struct kfi_ops_ep kfi_ibv_pep_ops = {
 	.setopt = kfi_no_setopt,
 	.tx_ctx = kfi_no_tx_ctx,
 	.rx_ctx = kfi_no_rx_ctx,
-	.rx_size_left = kfi_no_rx_size_left,
-	.tx_size_left = kfi_no_tx_size_left,
 };
 
 static int kfi_ibv_pep_getname(kfid_t fid, void *addr, size_t *addrlen);
 static int kfi_ibv_pep_listen(struct kfid_pep *pep);
 static int kfi_ibv_pep_reject(struct kfid_pep *pep, kfid_t handle,
-                const void *param, size_t paramlen);
+			      const void *param, size_t paramlen);
 
 static struct kfi_ops_cm kfi_ibv_pep_cm_ops = {
 	.setname = kfi_no_setname,
@@ -429,7 +473,6 @@ static struct kfi_ops_cm kfi_ibv_pep_cm_ops = {
 };
 
 /* EP support ops */
-
 static int kfi_ibv_ep_close(kfid_t fid);
 static int kfi_ibv_ep_bind(struct kfid *fid, struct kfid *bfid, uint64_t flags);
 static int kfi_ibv_ep_control(struct kfid *fid, int command, void *arg);
@@ -447,16 +490,14 @@ static struct kfi_ops_ep kfi_ibv_ep_ops = {
 	.setopt = kfi_no_setopt,
 	.tx_ctx = kfi_no_tx_ctx,
 	.rx_ctx = kfi_no_rx_ctx,
-	.rx_size_left = kfi_no_rx_size_left,
-	.tx_size_left = kfi_no_tx_size_left,
 };
 
 static int kfi_ibv_ep_getname(kfid_t fid, void *addr, size_t *addrlen);
 static int kfi_ibv_ep_getpeer(struct kfid_ep *ep, void *addr, size_t *addrlen);
 static int kfi_ibv_ep_connect(struct kfid_ep *ep, const void *addr,
-                const void *param, size_t paramlen);
+			      const void *param, size_t paramlen);
 static int kfi_ibv_ep_accept(struct kfid_ep *ep, const void *param,
-                size_t paramlen);
+			     size_t paramlen);
 static int kfi_ibv_ep_shutdown(struct kfid_ep *ep, uint64_t flags);
 
 static struct kfi_ops_cm kfi_ibv_ep_cm_ops = {
@@ -471,20 +512,22 @@ static struct kfi_ops_cm kfi_ibv_ep_cm_ops = {
 };
 
 static ssize_t kfi_ibv_ep_recv(struct kfid_ep *ep, void *buf, size_t len,
-                void *desc, kfi_addr_t src_addr, void *context);
+			       void *desc, kfi_addr_t src_addr, void *context);
 static ssize_t kfi_ibv_ep_recvv(struct kfid_ep *ep, const struct kvec *iov,
-                void **desc, size_t count, kfi_addr_t src_addr, void *context);
+				void **desc, size_t count, kfi_addr_t src_addr,
+				void *context);
 static ssize_t kfi_ibv_ep_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
-                uint64_t flags);
+				  uint64_t flags);
 static ssize_t kfi_ibv_ep_send(struct kfid_ep *ep, const void *buf, size_t len,
-                void *desc, kfi_addr_t dest_addr, void *context);
+			       void *desc, kfi_addr_t dest_addr, void *context);
 static ssize_t kfi_ibv_ep_sendv(struct kfid_ep *ep, const struct kvec *iov,
-                void **desc, size_t count, kfi_addr_t dest_addr, void *context);
+				void **desc, size_t count, kfi_addr_t dest_addr,
+				void *context);
 static ssize_t kfi_ibv_ep_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
-                uint64_t flags);
+				  uint64_t flags);
 static ssize_t kfi_ibv_ep_senddata(struct kfid_ep *ep, const void *buf,
-                size_t len, void *desc, uint64_t data, kfi_addr_t dest_addr,
-                void *context);
+				   size_t len, void *desc, uint64_t data,
+				   kfi_addr_t dest_addr, void *context);
 
 static struct kfi_ops_msg kfi_ibv_ep_msg_ops = {
 	.recv = kfi_ibv_ep_recv,
@@ -499,24 +542,31 @@ static struct kfi_ops_msg kfi_ibv_ep_msg_ops = {
 };
 
 static ssize_t kfi_ibv_ep_rma_read(struct kfid_ep *ep, void *buf, size_t len,
-                void *desc, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
-                void *context);
+				   void *desc, kfi_addr_t src_addr,
+				   uint64_t addr, uint64_t key, void *context);
 static ssize_t kfi_ibv_ep_rma_readv(struct kfid_ep *ep, const struct kvec *iov,
-                void **desc, size_t count, kfi_addr_t src_addr, uint64_t addr,
-                uint64_t key, void *context);
+				    void **desc, size_t count,
+				    kfi_addr_t src_addr, uint64_t addr,
+				    uint64_t key, void *context);
 static ssize_t kfi_ibv_ep_rma_readmsg(struct kfid_ep *ep,
-                const struct kfi_msg_rma *msg, uint64_t flags);
+				      const struct kfi_msg_rma *msg,
+				      uint64_t flags);
 static ssize_t kfi_ibv_ep_rma_write(struct kfid_ep *ep, const void *buf,
-                size_t len, void *desc, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, void *context);
+				    size_t len, void *desc,
+				    kfi_addr_t dest_addr, uint64_t addr,
+				    uint64_t key, void *context);
 static ssize_t kfi_ibv_ep_rma_writev(struct kfid_ep *ep, const struct kvec *iov,
-                void **desc, size_t count, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, void *context);
+				     void **desc, size_t count,
+				     kfi_addr_t dest_addr, uint64_t addr,
+				     uint64_t key, void *context);
 static ssize_t kfi_ibv_ep_rma_writemsg(struct kfid_ep *ep,
-                const struct kfi_msg_rma *msg, uint64_t flags);
+				       const struct kfi_msg_rma *msg,
+				       uint64_t flags);
 static ssize_t kfi_ibv_ep_rma_writedata(struct kfid_ep *ep, const void *buf,
-                size_t len, void *desc, uint64_t data, kfi_addr_t dest_addr,
-                uint64_t addr, uint64_t key, void *context);
+					size_t len, void *desc, uint64_t data,
+					kfi_addr_t dest_addr,
+					uint64_t addr, uint64_t key,
+					void *context);
 
 static struct kfi_ops_rma kfi_ibv_ep_rma_ops = {
 	.read = kfi_ibv_ep_rma_read,
@@ -530,51 +580,85 @@ static struct kfi_ops_rma kfi_ibv_ep_rma_ops = {
 	.injectdata = kfi_no_rma_injectdata,
 };
 
-static ssize_t kfi_ibv_ep_atomic_write(struct kfid_ep *ep, const void *buf,
-                size_t count, void *desc, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, enum kfi_datatype datatype, enum kfi_op op,
-                void *context);
+static ssize_t
+kfi_ibv_ep_atomic_write(struct kfid_ep *ep, const void *buf,
+			size_t count, void *desc, kfi_addr_t dest_addr,
+			uint64_t addr, uint64_t key, enum kfi_datatype datatype,
+			enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_writev(struct kfid_ep *ep,
-                const struct kfi_ioc *iov, void **desc, size_t count,
-                kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                enum kfi_datatype datatype, enum kfi_op op, void *context);
+					const struct kfi_ioc *iov, void **desc,
+					size_t count, kfi_addr_t dest_addr,
+					uint64_t addr, uint64_t key,
+					enum kfi_datatype datatype,
+					enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_writemsg(struct kfid_ep *ep,
-                const struct kfi_msg_atomic *msg, uint64_t flags);
+					  const struct kfi_msg_atomic *msg,
+					  uint64_t flags);
 static ssize_t kfi_ibv_ep_atomic_readwrite(struct kfid_ep *ep, const void *buf,
-                size_t count, void *desc, void *result, void *result_desc,
-                kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                enum kfi_datatype datatype, enum kfi_op op, void *context);
+					   size_t count, void *desc,
+					   void *result, void *result_desc,
+					   kfi_addr_t dest_addr, uint64_t addr,
+					   uint64_t key,
+					   enum kfi_datatype datatype,
+					   enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_readwritev(struct kfid_ep *ep,
-                const struct kfi_ioc *iov, void **desc, size_t count,
-                struct kfi_ioc *resultv, void **result_desc, size_t result_count,
-                kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                enum kfi_datatype datatype, enum kfi_op op, void *context);
+					    const struct kfi_ioc *iov,
+					    void **desc,
+					    size_t count,
+					    struct kfi_ioc *resultv,
+					    void **result_desc,
+					    size_t result_count,
+					    kfi_addr_t dest_addr,
+					    uint64_t addr,
+					    uint64_t key,
+					    enum kfi_datatype datatype,
+					    enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_readwritemsg(struct kfid_ep *ep,
-                const struct kfi_msg_atomic *msg, struct kfi_ioc *resultv,
-                void **result_desc, size_t result_count, uint64_t flags);
+					      const struct kfi_msg_atomic *msg,
+					      struct kfi_ioc *resultv,
+					      void **result_desc,
+					      size_t result_count,
+					      uint64_t flags);
 static ssize_t kfi_ibv_ep_atomic_compwrite(struct kfid_ep *ep, const void *buf,
-                size_t count, void *desc, const void *compare, void *compare_desc,
-                void *result, void *result_desc, kfi_addr_t dest_addr,
-                uint64_t addr, uint64_t key, enum kfi_datatype datatype,
-                enum kfi_op op, void *context);
+					   size_t count, void *desc,
+					   const void *compare,
+					   void *compare_desc,
+					   void *result, void *result_desc,
+					   kfi_addr_t dest_addr, uint64_t addr,
+					   uint64_t key,
+					   enum kfi_datatype datatype,
+					   enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_compwritev(struct kfid_ep *ep,
-                const struct kfi_ioc *iov, void **desc, size_t count,
-                const struct kfi_ioc *comparev, void **compare_desc,
-                size_t compare_count, struct kfi_ioc *resultv, void **result_desc,
-                size_t result_count, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, enum kfi_datatype datatype, enum kfi_op op,
-                void *context);
+					    const struct kfi_ioc *iov,
+					    void **desc, size_t count,
+					    const struct kfi_ioc *comparev,
+					    void **compare_desc,
+					    size_t compare_count,
+					    struct kfi_ioc *resultv,
+					    void **result_desc,
+					    size_t result_count,
+					    kfi_addr_t dest_addr, uint64_t addr,
+					    uint64_t key,
+					    enum kfi_datatype datatype,
+					    enum kfi_op op, void *context);
 static ssize_t kfi_ibv_ep_atomic_compwritemsg(struct kfid_ep *ep,
-                const struct kfi_msg_atomic *msg, const struct kfi_ioc *comparev,
-                void **compare_desc, size_t compare_count,
-                struct kfi_ioc *resultv, void **result_desc, size_t result_count,
-                uint64_t flags);
+					      const struct kfi_msg_atomic *msg,
+					      const struct kfi_ioc *comparev,
+					      void **compare_desc,
+					      size_t compare_count,
+					      struct kfi_ioc *resultv,
+					      void **result_desc,
+					      size_t result_count,
+					      uint64_t flags);
 static int kfi_ibv_ep_atomic_writevalid(struct kfid_ep *ep,
-                enum kfi_datatype datatype, enum kfi_op op, size_t *count);
+					enum kfi_datatype datatype,
+					enum kfi_op op, size_t *count);
 static int kfi_ibv_ep_atomic_readwritevalid(struct kfid_ep *ep,
-                enum kfi_datatype datatype, enum kfi_op op, size_t *count);
+					    enum kfi_datatype datatype,
+					    enum kfi_op op, size_t *count);
 static int kfi_ibv_ep_atomic_compwritevalid(struct kfid_ep *ep,
-                enum kfi_datatype datatype, enum kfi_op op, size_t *count);
+					    enum kfi_datatype datatype,
+					    enum kfi_op op, size_t *count);
 
 static struct kfi_ops_atomic kfi_ibv_ep_atomic_ops = {
 	.write = kfi_ibv_ep_atomic_write,
@@ -605,58 +689,70 @@ static struct kfi_ops_tagged kfi_ibv_ep_tagged_ops = {
 };
 
 /* Verb provider as an OFED client */
-
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+static int ib_kofi_add_one(struct ib_device *device);
+#else
 static void ib_kofi_add_one(struct ib_device *device);
-static void ib_kofi_remove_one(struct ib_device *device);
+#endif
+
+static void ib_kofi_remove_one(struct ib_device *device, void *context);
 static struct ib_client kofi_client = {
 	.name   = "kofi",
 	.add    = ib_kofi_add_one,
 	.remove = ib_kofi_remove_one
 };
 static int kfi_ibv_cma_handler(struct rdma_cm_id *cma_id,
-                struct rdma_cm_event *event);
+			       struct rdma_cm_event *event);
 static void kfi_ibv_qp_handler(struct ib_event *event, void *context);
 static void kfi_ibv_cq_comp_handler(struct ib_cq *cq, void *context);
 static void kfi_ibv_cq_event_handler(struct ib_event *event, void *context);
 
 /* Helper routines */
-static int kfi_ibv_get_info_dev(struct ib_device *device, struct kfi_info **info);
+static int kfi_ibv_get_info_dev(struct ib_device *device,
+				struct kfi_info **info);
 static struct kfi_ibv_device *kfi_ibv_find_dev(const char *fabric_name,
-                const char *domain_name);
+					       const char *domain_name);
 static struct kfi_info *kfi_ibv_find_info(const char *fabric_name,
-                const char *domain_name);
-static struct kfi_info * kfi_ibv_eq_cm_getinfo(struct kfi_ibv_event *event);
+					  const char *domain_name);
+static struct kfi_info *kfi_ibv_eq_cm_getinfo(struct kfi_ibv_event *event);
 static int kfi_ibv_get_device_attrs(struct ib_device *device,
-                struct kfi_info *info);
+				    struct kfi_info *info);
 static int kfi_ibv_get_qp_cap(struct ib_device *device,
-                struct ib_device_attr *device_attr, struct kfi_info *info);
-static int kfi_ibv_create_id(const struct kfi_info *hints, struct rdma_cm_id **id,
-                bool passive_ep);
+			      struct ib_device_attr *device_attr,
+			      struct kfi_info *info);
+static int kfi_ibv_create_id(const struct kfi_info *hints,
+			     struct rdma_cm_id **id, bool passive_ep);
 static int kfi_ibv_check_hints(const struct kfi_info *hints,
-                const struct kfi_info *info);
+			       const struct kfi_info *info);
 static void kfi_ibv_update_info(const struct kfi_info *hints,
-                struct kfi_info *info);
+				struct kfi_info *info);
 static int kfi_ibv_check_fabric_attr(const struct kfi_fabric_attr *attr,
-                const struct kfi_info *info);
+				     const struct kfi_info *info);
 static int kfi_ibv_check_domain_attr(const struct kfi_domain_attr *attr,
-                const struct kfi_info *info);
+				     const struct kfi_info *info);
 static int kfi_ibv_check_ep_attr(const struct kfi_ep_attr *attr,
-                const struct kfi_info *info);
+				 const struct kfi_info *info);
 static int kfi_ibv_check_rx_attr(const struct kfi_rx_attr *attr,
-                const struct kfi_info *hints, const struct kfi_info *info);
+				 const struct kfi_info *hints,
+				 const struct kfi_info *info);
 static int kfi_ibv_check_tx_attr(const struct kfi_tx_attr *attr,
-                const struct kfi_info *hints, const struct kfi_info *info);
-static int kfi_ibv_copy_addr(void *dst_addr, size_t *dst_addrlen, void *src_addr);
+				 const struct kfi_info *hints,
+				 const struct kfi_info *info);
+static int kfi_ibv_copy_addr(void *dst_addr, size_t *dst_addrlen,
+			     void *src_addr);
 static int kfi_ibv_sockaddr_len(struct sockaddr *addr);
 static ssize_t kfi_ibv_eq_cm_process_event(struct kfi_ibv_eq *eq,
-                struct kfi_ibv_event *cma_event, uint32_t *event,
-                struct kfi_eq_cm_entry *entry, size_t len);
+					   struct kfi_ibv_event *cma_event,
+					   uint32_t *event,
+					   struct kfi_eq_cm_entry *entry,
+					   size_t len);
 static int kfi_ibv_pep_unbind(kfid_t fid, struct kfid *bfid);
 static int kfi_ibv_ep_unbind(kfid_t fid, struct kfid *bfid, uint64_t flags);
-static const char * kstrerror(int errno);
+static const char *kstrerror(int errno);
 static const char *ib_wc_status_str(enum ib_wc_status status);
 static uint64_t kfi_ibv_comp_flags(struct ib_wc *wc);
-static int kfi_ibv_fill_sge(void *addr, size_t len, void *desc, struct ib_sge *sge);
+static int kfi_ibv_fill_sge(void *addr, size_t len, void *desc,
+			    struct ib_sge *sge);
 
 static int __init
 kfi_ibv_init(void)
@@ -691,30 +787,32 @@ kfi_ibv_exit(void)
 {
 	ib_unregister_client(&kofi_client);
 	(void)kfi_provider_deregister(&ibv_prov);
-	return;
 }
 
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+static int
+#else
 static void
+#endif
 ib_kofi_add_one(struct ib_device *device)
 {
 	struct kfi_info *fi = NULL;
 	struct kfi_ibv_device *dev = NULL;
-	int ret = 0;
+	int ret = -EINVAL;
 
-	if (!device) {
-		return;
-	}
+	if (!device)
+		goto err;
 
 	ret = kfi_ibv_get_info_dev(device, &fi);
 	if (ret) {
 		LOG_ERR("Failed obain fabric information for %s.",
-		                device->name);
+			device->name);
 		goto err;
 	}
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		LOG_ERR("Failed to allocate device context for %s.",
-		                device->name);
+			device->name);
 		goto err;
 	}
 	INIT_LIST_HEAD(&dev->list);
@@ -726,43 +824,51 @@ ib_kofi_add_one(struct ib_device *device)
 	mutex_unlock(&ibv_dev_mutex);
 
 	LOG_INFO("Added device context for %s.", device->name);
+
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+	return 0;
+#else
 	return;
+#endif
 
 err:
-	kfi_deallocinfo(fi);
-	return;
+	kfi_freeinfo(fi);
+
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+	return ret;
+#endif
 }
 
 static void
-ib_kofi_remove_one(struct ib_device *device)
+ib_kofi_remove_one(struct ib_device *device, void *context)
 {
 	struct list_head *lh = NULL, *tmp = NULL;
 	struct kfi_ibv_device *dev = NULL;
 
-	if (!device) {
+	if (!device)
 		return;
-	}
 
 	mutex_lock(&ibv_dev_mutex);
 	list_for_each_safe(lh, tmp, &ibv_dev_list) {
 		dev = list_entry(lh, typeof(*dev), list);
 		if (dev->device == device) {
 			list_del(&dev->list);
-			kfi_deallocinfo(dev->info);
+			kfi_freeinfo(dev->info);
 			kfree(dev);
-			LOG_INFO("Removed device context for %s.", device->name);
+			LOG_INFO("Removed device context for %s.",
+				 device->name);
 		}
 	}
 	mutex_unlock(&ibv_dev_mutex);
-
-	return;
 }
 
 static int
-kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info)
+kfi_ibv_getinfo(uint32_t version, const char *node, const char *service,
+		uint64_t flags, struct kfi_info *hints, struct kfi_info **info)
 {
 	struct list_head *lh = NULL;
-	struct kfi_info *fi = NULL, *_fi = NULL, *tail = NULL, *check_info = NULL;
+	struct kfi_info *fi = NULL, *_fi = NULL, *tail = NULL,
+			*check_info = NULL;
 	struct kfi_ibv_device *dev = NULL;
 	struct kfi_ibv_pep *pep = NULL;
 	struct kfi_ibv_ep *ep = NULL;
@@ -796,9 +902,8 @@ kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info
 		id = pep->id;
 	}
 
-	if (ret){
+	if (ret)
 		goto err_cleanup;
-	}
 
 	mutex_lock(&ibv_dev_mutex);
 	if (list_empty(&ibv_dev_list)) {
@@ -812,10 +917,11 @@ kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info
 			goto err_unlock;
 		}
 		ret = kfi_ibv_check_hints(hints, check_info);
-		if (ret) {
+		if (ret)
 			goto err_unlock;
-		}
-		if (!(fi = kfi_dupinfo(check_info))) {
+
+		fi = kfi_dupinfo(check_info);
+		if (!fi) {
 			ret = -ENOMEM;
 			goto err_unlock;
 		}
@@ -826,25 +932,24 @@ kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info
 			check_info = dev->info;
 			if (hints) {
 				ret = kfi_ibv_check_hints(hints, check_info);
-				if (ret) {
+				if (ret)
 					continue;
-				}
 			}
-			if (!(_fi = kfi_dupinfo(check_info))) {
+
+			_fi = kfi_dupinfo(check_info);
+			if (!_fi) {
 				ret = -ENOMEM;
 				goto err_unlock;
 			}
-			if (!fi) {
+
+			if (!fi)
 				fi = _fi;
-			}
-			if (tail) {
+			if (tail)
 				tail->next = _fi;
-			} else {
+			else
 				tail = _fi;
-			}
-			if (hints) {
+			if (hints)
 				kfi_ibv_update_info(hints, _fi);
-			}
 		}
 		if (!fi) {
 			ret = -ENODATA;
@@ -854,36 +959,26 @@ kfi_ibv_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info
 
 	*info = fi;
 	mutex_unlock(&ibv_dev_mutex);
-	if (id) {
+	if (id)
 		rdma_destroy_id(id);
-	}
-	if (pep) {
-		kfree(pep);
-	}
-	if (ep) {
-		kfree(ep);
-	}
+	kfree(pep);
+	kfree(ep);
 	return ret;
 
 err_unlock:
 	mutex_unlock(&ibv_dev_mutex);
 err_cleanup:
-	kfi_deallocinfo(fi);
-	if (id) {
+	kfi_freeinfo(fi);
+	if (id)
 		rdma_destroy_id(id);
-	}
-	if (pep) {
-		kfree(pep);
-	}
-	if (ep) {
-		kfree(ep);
-	}
+	kfree(pep);
+	kfree(ep);
 	return ret;
 }
 
 static int
 kfi_ibv_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
-                void *context)
+	       void *context)
 {
 	struct kfi_ibv_fabric *fab = NULL;
 	struct kfi_info *info = NULL;
@@ -897,9 +992,8 @@ kfi_ibv_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
 		goto err;
 	}
 	ret = kfi_ibv_check_fabric_attr(attr, info);
-	if (ret) {
+	if (ret)
 		goto err;
-	}
 
 	fab = kzalloc(sizeof(*fab), GFP_KERNEL);
 	if (!fab) {
@@ -921,20 +1015,13 @@ err:
 }
 
 static void
-kfi_ibv_freeinfo(struct kfi_info *info)
-{
-	return;
-}
-
-static void
 kfi_ibv_cleanup(void)
 {
-	return;
 }
 
 static int
 kfi_ibv_domain(struct kfid_fabric *fabric, struct kfi_info *info,
-                struct kfid_domain **domain, void *context)
+	       struct kfid_domain **domain, void *context)
 {
 	struct kfi_ibv_domain *_domain = NULL;
 	struct kfi_info *fi = NULL;
@@ -948,9 +1035,8 @@ kfi_ibv_domain(struct kfid_fabric *fabric, struct kfi_info *info,
 		goto err;
 	}
 	ret = kfi_ibv_check_domain_attr(info->domain_attr, fi);
-	if (ret) {
+	if (ret)
 		goto err;
-	}
 
 	_domain = kzalloc(sizeof(*_domain), GFP_KERNEL);
 	if (!_domain) {
@@ -970,7 +1056,7 @@ kfi_ibv_domain(struct kfid_fabric *fabric, struct kfi_info *info,
 	_domain->domain_fid.ops = &kfi_ibv_domain_ops;
 	_domain->domain_fid.mr = &kfi_ibv_domain_mr_ops;
 
-	_domain->pd = ib_alloc_pd(_domain->dev->device);
+	_domain->pd = ib_alloc_pd(_domain->dev->device, 0);
 	if (!_domain->pd) {
 		ret = -EBUSY;
 		goto err;
@@ -980,16 +1066,14 @@ kfi_ibv_domain(struct kfid_fabric *fabric, struct kfi_info *info,
 	return ret;
 
 err:
-	if (_domain) {
-		kfree(_domain);
-	}
+	kfree(_domain);
 	kfi_deref_id(&fabric->fid);
 	return ret;
 }
 
 static int
 kfi_ibv_passive_ep(struct kfid_fabric *fabric, struct kfi_info *info,
-                struct kfid_pep **pep, void *context)
+		   struct kfid_pep **pep, void *context)
 {
 	struct kfi_ibv_pep *_pep = NULL;
 	int ret = 0;
@@ -1011,29 +1095,37 @@ kfi_ibv_passive_ep(struct kfid_fabric *fabric, struct kfi_info *info,
 	_pep->pep_fid.cm = &kfi_ibv_pep_cm_ops;
 
 	ret = kfi_ibv_create_id(info, &_pep->id, true);
-	if (ret) {
+	if (ret)
 		goto err;
-	}
-	*pep = &_pep->pep_fid;
 
+	*pep = &_pep->pep_fid;
 	return ret;
 
 err:
-	if (_pep) {
-		kfree(_pep);
-	}
+	kfree(_pep);
 	kfi_deref_id(&fabric->fid);
 	return ret;
 }
 
 static int
 kfi_ibv_eq_open(struct kfid_fabric *fabric, struct kfi_eq_attr *attr,
-                struct kfid_eq **eq, void *context)
+		struct kfid_eq **eq, kfi_event_handler event_handler,
+		void *context)
 {
 	struct kfi_ibv_eq *_eq = NULL;
 	int ret = 0;
 
 	kfi_ref_id(&fabric->fid);
+
+	switch (attr->wait_obj) {
+	case KFI_WAIT_NONE:
+	case KFI_WAIT_UNSPEC:
+	case KFI_WAIT_QUEUE:
+		break;
+	default:
+		ret = -EINVAL;
+		goto err;
+	};
 
 	_eq = kzalloc(sizeof(*_eq), GFP_KERNEL);
 	if (!_eq) {
@@ -1050,8 +1142,10 @@ kfi_ibv_eq_open(struct kfid_fabric *fabric, struct kfi_eq_attr *attr,
 	init_waitqueue_head(&_eq->poll_wait);
 	_eq->fab = container_of(fabric, struct kfi_ibv_fabric, fabric_fid);
 	_eq->flags = attr->flags;
-	*eq = &_eq->eq_fid;
+	_eq->wait_obj = attr->wait_obj;
+	_eq->wait_set = attr->wait_set;
 
+	*eq = &_eq->eq_fid;
 	return ret;
 
 err:
@@ -1076,28 +1170,39 @@ kfi_ibv_domain_close(kfid_t fid)
 {
 	struct kfi_ibv_domain *domain = NULL;
 	struct kfi_ibv_fabric *fab = NULL;
-	int ret = 0;
 
 	domain = container_of(fid, struct kfi_ibv_domain, domain_fid.fid);
 	fab = domain->fab;
 	if (domain->pd) {
-		ret = ib_dealloc_pd(domain->pd);
+		ib_dealloc_pd(domain->pd);
 		domain->pd = NULL;
 	}
 	kfi_close_id(fid);
 	kfree(domain);
 	kfi_deref_id(&fab->fabric_fid.fid);
-	return ret;
+	return 0;
 }
 
 static int
 kfi_ibv_cq_open(struct kfid_domain *domain, struct kfi_cq_attr *attr,
-                struct kfid_cq **cq, void *context)
+		struct kfid_cq **cq, kfi_comp_handler comp_handler,
+		void *context)
 {
 	struct kfi_ibv_cq *_cq = NULL;
+	struct ib_cq_init_attr cq_attr;
 	int ret = 0;
 
 	kfi_ref_id(&domain->fid);
+
+	switch (attr->wait_obj) {
+	case KFI_WAIT_NONE:
+	case KFI_WAIT_UNSPEC:
+	case KFI_WAIT_QUEUE:
+		break;
+	default:
+		ret = -EINVAL;
+		goto err;
+	};
 
 	_cq = kzalloc(sizeof(*_cq), GFP_KERNEL);
 	if (!_cq) {
@@ -1131,26 +1236,32 @@ kfi_ibv_cq_open(struct kfid_domain *domain, struct kfi_cq_attr *attr,
 		goto err;
 	}
 
-	_cq->cq = ib_create_cq(_cq->domain->dev->device, kfi_ibv_cq_comp_handler,
-		kfi_ibv_cq_event_handler, _cq, attr->size, attr->signaling_vector);
+	cq_attr.cqe = attr->size;
+	cq_attr.comp_vector = attr->signaling_vector;
+	cq_attr.flags = 0;
+	_cq->cq = ib_create_cq(_cq->domain->dev->device,
+			       kfi_ibv_cq_comp_handler,
+			       kfi_ibv_cq_event_handler, _cq, &cq_attr);
 	if (IS_ERR(_cq->cq)) {
 		ret = PTR_ERR(_cq->cq);
 		goto err;
 	}
+
+	_cq->wait_obj = attr->wait_obj;
+	_cq->wait_set = attr->wait_set;
+
 	*cq = &_cq->cq_fid;
 	return 0;
 
 err:
-	if (_cq) {
-		kfree(_cq);
-	}
+	kfree(_cq);
 	kfi_deref_id(&domain->fid);
 	return ret;
 }
 
 static int
 kfi_ibv_endpoint(struct kfid_domain *domain, struct kfi_info *info,
-                struct kfid_ep **ep, void *context)
+		 struct kfid_ep **ep, void *context)
 {
 	struct kfi_ibv_domain *dom = NULL;
 	struct kfi_ibv_ep *_ep = NULL;
@@ -1174,21 +1285,18 @@ kfi_ibv_endpoint(struct kfid_domain *domain, struct kfi_info *info,
 	}
 	if (info->ep_attr) {
 		ret = kfi_ibv_check_ep_attr(info->ep_attr, fi);
-		if (ret) {
+		if (ret)
 			goto err;
-		}
 	}
 	if (info->tx_attr) {
 		ret = kfi_ibv_check_tx_attr(info->tx_attr, info, fi);
-		if (ret) {
+		if (ret)
 			goto err;
-		}
 	}
 	if (info->rx_attr) {
 		ret = kfi_ibv_check_rx_attr(info->rx_attr, info, fi);
-		if (ret) {
+		if (ret)
 			goto err;
-		}
 	}
 
 	_ep = kzalloc(sizeof(*_ep), GFP_KERNEL);
@@ -1217,20 +1325,18 @@ kfi_ibv_endpoint(struct kfid_domain *domain, struct kfi_info *info,
 	_ep->ep_fid.rma = &kfi_ibv_ep_rma_ops;
 	_ep->ep_fid.atomic = &kfi_ibv_ep_atomic_ops;
 	_ep->ep_fid.tagged = &kfi_ibv_ep_tagged_ops;
-	if (info->tx_attr) {
+	if (info->tx_attr)
 		*(_ep->tx_attr) = *(info->tx_attr);
-	}
-	if (info->rx_attr) {
+	if (info->rx_attr)
 		*(_ep->rx_attr) = *(info->rx_attr);
-	}
 
 	if (!info->handle) {
 		ret = kfi_ibv_create_id(info, &_ep->id, false);
-		if (ret) {
+		if (ret)
 			goto err;
-		}
 	} else if (info->handle->fclass == KFI_CLASS_CONNREQ) {
-		connreq = container_of(info->handle, struct kfi_ibv_connreq, handle);
+		connreq = container_of(info->handle, struct kfi_ibv_connreq,
+				       handle);
 		connreq->ep = _ep;
 		kfi_ref_id(&_ep->ep_fid.fid);
 		_ep->handle = info->handle;
@@ -1248,12 +1354,8 @@ kfi_ibv_endpoint(struct kfid_domain *domain, struct kfi_info *info,
 
 err:
 	if (_ep) {
-		if (_ep->tx_attr) {
-			kfree(_ep->tx_attr);
-		}
-		if (_ep->rx_attr) {
-			kfree(_ep->rx_attr);
-		}
+		kfree(_ep->tx_attr);
+		kfree(_ep->rx_attr);
 		kfree(_ep);
 	}
 	kfi_deref_id(&domain->fid);
@@ -1262,12 +1364,14 @@ err:
 
 static int
 kfi_ibv_mr_reg(struct kfid *fid, const void *buf, size_t len, uint64_t access,
-                uint64_t offset, uint64_t requested_key, uint64_t flags,
-                struct kfid_mr **mr, void *context, uint64_t *dma_addr)
+	       uint64_t offset, uint64_t requested_key, uint64_t flags,
+	       struct kfid_mr **mr, void *context)
 {
-	struct kfi_ibv_mem_desc *md = NULL;
-	int ibv_access = 0;
-	int ret = 0;
+	struct kfi_ibv_mem_desc		*md = NULL;
+	int				ret = 0;
+	size_t				nob = len;
+	uintptr_t			vaddr = 0;
+	struct scatterlist		*sg = NULL;
 
 	kfi_ref_id(fid);
 	if (fid->fclass != KFI_CLASS_DOMAIN) {
@@ -1286,47 +1390,88 @@ kfi_ibv_mr_reg(struct kfid *fid, const void *buf, size_t len, uint64_t access,
 	md->mr_fid.fid.ops = &kfi_ibv_mr_fi_ops;
 	md->domain = container_of(fid, struct kfi_ibv_domain, domain_fid.fid);
 
-	ibv_access = IB_ACCESS_LOCAL_WRITE;
-	if (access & KFI_REMOTE_READ) {
-		ibv_access |= IB_ACCESS_REMOTE_READ;
+	md->access = IB_ACCESS_LOCAL_WRITE;
+	if (access & KFI_REMOTE_READ)
+		md->access |= IB_ACCESS_REMOTE_READ;
+	if (access & KFI_REMOTE_WRITE)
+		md->access |= IB_ACCESS_REMOTE_WRITE;
+	if ((access & KFI_READ) || (access & KFI_WRITE))
+		md->access |= IB_ACCESS_REMOTE_ATOMIC;
+
+	md->vaddr = (void *)buf;
+
+	/* Create SGE list of PAGE_SIZE elements for IB MR */
+	md->nfrags = (len / PAGE_SIZE);
+	if (((uintptr_t)buf + offset) % PAGE_SIZE)
+		md->nfrags++;
+	md->frags = kcalloc(md->nfrags, sizeof(*md->frags), GFP_KERNEL);
+	if (!md->frags) {
+		ret = -ENOMEM;
+		goto err;
 	}
-	if (access & KFI_REMOTE_WRITE) {
-		ibv_access |= IB_ACCESS_REMOTE_WRITE;
+
+	sg_init_table(md->frags, md->nfrags);
+
+	vaddr = (uintptr_t)buf + offset;
+	sg = md->frags;
+	while (nob > 0) {
+		int page_offset = vaddr & (PAGE_SIZE - 1);
+		struct page *page = virt_to_page(vaddr);
+		int fragnob = min_t(int, (PAGE_SIZE - page_offset), nob);
+
+		sg_set_page(sg, page, fragnob, page_offset);
+		sg = sg_next(sg);
+		nob -= fragnob;
+		vaddr += fragnob;
 	}
-	if ((access & KFI_READ) || (access & KFI_WRITE)) {
-		ibv_access |= IB_ACCESS_REMOTE_ATOMIC;
-	}
-	md->vaddr = (void*)buf;
-	md->mr = ib_get_dma_mr(md->domain->pd, ibv_access);
+
+	/* Map memory to MR */
+	md->mr = ib_alloc_mr(md->domain->pd, IB_MR_TYPE_MEM_REG, md->nfrags);
 	if (IS_ERR(md->mr)) {
 		ret = PTR_ERR(md->mr);
 		goto err;
 	}
-	md->mr_fid.mem_desc = (void *)md;
-	md->mr_fid.key = md->mr->rkey;
 
-	md->dma_addr = ib_dma_map_single(md->domain->dev->device, (void *)buf,
-	                                          len, DMA_BIDIRECTIONAL);
-	ret = ib_dma_mapping_error(md->domain->dev->device, md->dma_addr);
-	if (ret) {
-		md->dma_addr = 0;
+	ret = ib_dma_map_sg(md->domain->dev->device, md->frags, md->nfrags,
+			    DMA_BIDIRECTIONAL);
+	if (ret != md->nfrags) {
+		ret = -EINVAL;
 		goto err;
 	}
+	md->mem_mapped = true;
+
+	/* This function will define the iova with the ib_mr struct */
+	ret = ib_map_mr_sg(md->mr, md->frags, md->nfrags, NULL, PAGE_SIZE);
+	if (ret != md->nfrags) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	/*
+	 * Grab the global lkey from the protection domain and use fo
+	 * ib_post_recv. This is what iSER does.
+	 */
+	md->global_lkey = md->domain->pd->local_dma_lkey;
+
+	md->mr_fid.mem_desc = (void *)md;
+	md->mr_fid.key = md->mr->rkey;
+	md->dma_addr = md->mr->iova;
 	md->dma_len = len;
+	md->mr_fid.iova = md->dma_addr;
 
 	*mr = &md->mr_fid;
-	*dma_addr = md->dma_addr;
-	return ret;
+	return 0;
 err:
 	if (md) {
-		if (md->dma_addr) {
-			ib_dma_unmap_single(md->domain->dev->device,
-			                md->dma_addr, len, DMA_BIDIRECTIONAL);
+		if (md->mem_mapped) {
+			ib_dma_unmap_sg(md->domain->dev->device, md->frags,
+					md->nfrags, DMA_BIDIRECTIONAL);
+			md->mem_mapped = false;
 			md->dma_addr = 0;
 		}
-		if (md->mr) {
+		kfree(md->frags);
+		if (md->mr)
 			(void)ib_dereg_mr(md->mr);
-		}
 		kfree(md);
 	}
 	kfi_deref_id(fid);
@@ -1342,14 +1487,15 @@ kfi_ibv_mr_close(kfid_t fid)
 
 	md = container_of(fid, struct kfi_ibv_mem_desc, mr_fid.fid);
 	domain = md->domain;
-	if (md->dma_addr) {
-		ib_dma_unmap_single(md->domain->dev->device, md->dma_addr,
-		                md->dma_len, DMA_BIDIRECTIONAL);
+	if (md->mem_mapped) {
+		ib_dma_unmap_sg(md->domain->dev->device, md->frags, md->nfrags,
+				DMA_BIDIRECTIONAL);
+		md->mem_mapped = false;
 		md->dma_addr = 0;
 	}
-	if (md->mr) {
+	kfree(md->frags);
+	if (md->mr)
 		ret = ib_dereg_mr(md->mr);
-	}
 	kfi_close_id(fid);
 	kfree(md);
 	kfi_deref_id(&domain->domain_fid.fid);
@@ -1368,11 +1514,10 @@ kfi_ibv_eq_close(kfid_t fid)
 	eq = container_of(fid, struct kfi_ibv_eq, eq_fid.fid);
 	fab = eq->fab;
 	if (eq->ep_fid) {
-		if (eq->ep_fid->fclass == KFI_CLASS_PEP) {
+		if (eq->ep_fid->fclass == KFI_CLASS_PEP)
 			ret = kfi_ibv_pep_unbind(eq->ep_fid, fid);
-		} else if (eq->ep_fid->fclass == KFI_CLASS_EP) {
+		else if (eq->ep_fid->fclass == KFI_CLASS_EP)
 			ret = kfi_ibv_ep_unbind(eq->ep_fid, fid, 0);
-		}
 	}
 
 	mutex_lock(&eq->mut);
@@ -1380,9 +1525,8 @@ kfi_ibv_eq_close(kfid_t fid)
 		list_for_each_safe(lh, tmp, &eq->event_list) {
 			event = list_entry(lh, typeof(*event), list);
 			list_del(&event->list);
-			if (event->event.param.conn.private_data_len) {
+			if (event->event.param.conn.private_data_len)
 				kfree(event->event.param.conn.private_data);
-			}
 			kfree(event);
 		}
 	}
@@ -1396,7 +1540,7 @@ kfi_ibv_eq_close(kfid_t fid)
 
 static ssize_t
 kfi_ibv_eq_read(struct kfid_eq *eq, uint32_t *event, void *buf, size_t len,
-                uint64_t flags)
+		uint64_t flags)
 {
 	struct kfi_ibv_eq *_eq = NULL;
 	struct kfi_ibv_event *_event = NULL;
@@ -1420,9 +1564,8 @@ kfi_ibv_eq_read(struct kfid_eq *eq, uint32_t *event, void *buf, size_t len,
 	list_del(&_event->list);
 
 	ret = kfi_ibv_eq_cm_process_event(_eq, _event, event, entry, len);
-	if (_event->event.param.conn.private_data_len) {
+	if (_event->event.param.conn.private_data_len)
 		kfree(_event->event.param.conn.private_data);
-	}
 	kfree(_event);
 exit:
 	mutex_unlock(&_eq->mut);
@@ -1432,7 +1575,7 @@ exit:
 
 static ssize_t
 kfi_ibv_eq_readerr(struct kfid_eq *eq, struct kfi_eq_err_entry *entry,
-                uint64_t flags)
+		   uint64_t flags)
 {
 	struct kfi_ibv_eq *_eq = NULL;
 	ssize_t ret = 0;
@@ -1441,9 +1584,9 @@ kfi_ibv_eq_readerr(struct kfid_eq *eq, struct kfi_eq_err_entry *entry,
 	_eq = container_of(eq, struct kfi_ibv_eq, eq_fid);
 
 	mutex_lock(&_eq->mut);
-	if (!_eq->err.err) {
+	if (!_eq->err.err)
 		goto exit;
-	}
+
 	*entry = _eq->err;
 	_eq->err.err = 0;
 	_eq->err.prov_errno = 0;
@@ -1456,7 +1599,7 @@ exit:
 
 static ssize_t
 kfi_ibv_eq_sread(struct kfid_eq *eq, uint32_t *event, void *buf, size_t len,
-                int timeout, uint64_t flags)
+		 int timeout, uint64_t flags)
 {
 	struct kfi_ibv_eq *_eq = NULL;
 	ssize_t ret = 0;
@@ -1464,26 +1607,32 @@ kfi_ibv_eq_sread(struct kfid_eq *eq, uint32_t *event, void *buf, size_t len,
 	kfi_ref_id(&eq->fid);
 	_eq = container_of(eq, struct kfi_ibv_eq, eq_fid);
 
+	if (_eq->wait_obj == KFI_WAIT_NONE) {
+		LOG_ERR("Cannot perform sread EQ");
+		ret = -ENOSYS;
+		goto exit;
+	}
+
 	while (1) {
 		ret = kfi_ibv_eq_read(eq, event, buf, len, flags);
-		if (ret && (ret != -EAGAIN)) {
+		if (ret && (ret != -EAGAIN))
 			goto exit;
-		}
+
 		if (timeout > 0) {
 			ret = wait_event_interruptible_timeout(_eq->poll_wait,
-			                      !list_empty(&_eq->event_list),
-			                      msecs_to_jiffies(timeout));
+				!list_empty(&_eq->event_list),
+				msecs_to_jiffies(timeout));
 			if (ret == 0) {
 				ret = -EAGAIN;
 				goto exit;
 			}
 		} else {
 			ret = wait_event_interruptible(_eq->poll_wait,
-			                      !list_empty(&_eq->event_list));
+				!list_empty(&_eq->event_list));
 		}
-		if (ret < 0) {
+
+		if (ret < 0)
 			goto exit;
-		}
 	}
 exit:
 	kfi_deref_id(&eq->fid);
@@ -1492,11 +1641,10 @@ exit:
 
 static const char *
 kfi_ibv_eq_strerror(struct kfid_eq *eq, int prov_errno, const void *err_data,
-                char *buf, size_t len)
+		    char *buf, size_t len)
 {
-	if (buf && len) {
+	if (buf && len)
 		strncpy(buf, kstrerror(prov_errno), len);
-	}
 	return kstrerror(prov_errno);
 }
 
@@ -1512,7 +1660,7 @@ kfi_ibv_cq_close(kfid_t fid)
 
 	mutex_lock(&cq->mut);
 	if (cq->cq) {
-		ret = ib_destroy_cq(cq->cq);
+		ret = IB_DESTROY_CQ(cq->cq);
 		cq->cq = NULL;
 	}
 	mutex_unlock(&cq->mut);
@@ -1540,9 +1688,9 @@ kfi_ibv_cq_read_context(struct kfid_cq *cq, void *buf, size_t count)
 	}
 	for (i = 0; i < count; i++) {
 		ret = ib_poll_cq(_cq->cq, 1, &_cq->wc);
-		if (ret <= 0) {
+		if (ret <= 0)
 			break;
-		}
+
 		if (_cq->wc.status) {
 			ret = -EIO;
 			break;
@@ -1558,7 +1706,7 @@ exit:
 
 static ssize_t
 kfi_ibv_cq_readerr(struct kfid_cq *cq, struct kfi_cq_err_entry *entry,
-                uint64_t flags)
+		   uint64_t flags)
 {
 	struct kfi_ibv_cq *_cq = NULL;
 	ssize_t ret = 0;
@@ -1575,7 +1723,8 @@ kfi_ibv_cq_readerr(struct kfid_cq *cq, struct kfi_cq_err_entry *entry,
 	entry->flags = 0;
 	entry->err = EIO;
 	entry->prov_errno = _cq->wc.status;
-	memcpy(&entry->err_data, &_cq->wc.vendor_err, sizeof(_cq->wc.vendor_err));
+	memcpy(&entry->err_data, &_cq->wc.vendor_err,
+	       sizeof(_cq->wc.vendor_err));
 	_cq->wc.status = 0;
 	ret = sizeof(*entry);
 exit:
@@ -1586,7 +1735,7 @@ exit:
 
 static ssize_t
 kfi_ibv_cq_sread(struct kfid_cq *cq, void *buf, size_t count, const void *cond,
-                int timeout)
+		 int timeout)
 {
 	ssize_t ret = 0, cur = 0;
 	ssize_t  threshold = 0;
@@ -1594,21 +1743,21 @@ kfi_ibv_cq_sread(struct kfid_cq *cq, void *buf, size_t count, const void *cond,
 
 	kfi_ref_id(&cq->fid);
 	_cq = container_of(cq, struct kfi_ibv_cq, cq_fid);
-	if (!_cq->cq) {
+	if (!_cq->cq || _cq->wait_obj == KFI_WAIT_NONE) {
+		LOG_ERR("Cannot perform sread CQ");
 		ret = -ENOSYS;
 		goto exit;
 	}
 
-	threshold = (cond) ? min((size_t)cond, count) : 1;
+	threshold = (cond) ? min_t(size_t, (size_t)cond, count) : 1;
 
 	for (cur = 0; cur < threshold; ) {
 		ret = _cq->cq_fid.ops->read(&_cq->cq_fid, buf, count - cur);
 		if (ret > 0) {
 			buf += ret*(_cq->entry_size);
 			cur += ret;
-			if (cur >= threshold) {
+			if (cur >= threshold)
 				break;
-			}
 		} else if (ret != -EAGAIN) {
 			break;
 		}
@@ -1628,27 +1777,26 @@ kfi_ibv_cq_sread(struct kfid_cq *cq, void *buf, size_t count, const void *cond,
 		if (ret > 0) {
 			buf += ret*(_cq->entry_size);
 			cur += ret;
-			if (cur >= threshold) {
+			if (cur >= threshold)
 				break;
-			}
 		} else if (ret != -EAGAIN) {
 			break;
 		}
 
 		if (timeout > 0) {
 			ret = wait_event_interruptible_timeout(_cq->wait,
-			                      _cq->new_entry,
-			                      msecs_to_jiffies(timeout));
+				_cq->new_entry, msecs_to_jiffies(timeout));
 			if (ret == 0) {
 				ret = -EAGAIN;
 				break;
 			}
 		} else {
-			ret = wait_event_interruptible(_cq->wait, _cq->new_entry);
+			ret = wait_event_interruptible(_cq->wait,
+						       _cq->new_entry);
 		}
-		if (ret < 0) {
+
+		if (ret < 0)
 			break;
-		}
 	}
 exit:
 	kfi_deref_id(&cq->fid);
@@ -1657,11 +1805,10 @@ exit:
 
 static const char *
 kfi_ibv_cq_strerror(struct kfid_cq *eq, int prov_errno, const void *err_data,
-                char *buf, size_t len)
+		    char *buf, size_t len)
 {
-	if (buf && len) {
+	if (buf && len)
 		strncpy(buf, ib_wc_status_str(prov_errno), len);
-	}
 	return ib_wc_status_str(prov_errno);
 }
 
@@ -1682,9 +1829,9 @@ kfi_ibv_cq_read_msg(struct kfid_cq *cq, void *buf, size_t count)
 	}
 	for (i = 0; i < count; i++) {
 		ret = ib_poll_cq(_cq->cq, 1, &_cq->wc);
-		if (ret <= 0) {
+		if (ret <= 0)
 			break;
-		}
+
 		if (_cq->wc.status) {
 			ret = -EIO;
 			break;
@@ -1717,25 +1864,25 @@ kfi_ibv_cq_read_data(struct kfid_cq *cq, void *buf, size_t count)
 	}
 	for (i = 0; i < count; i++) {
 		ret = ib_poll_cq(_cq->cq, 1, &_cq->wc);
-		if (ret <= 0) {
+		if (ret <= 0)
 			break;
-		}
+
 		if (_cq->wc.status) {
 			ret = -EIO;
 			break;
 		}
 		entry->op_context = (void *)_cq->wc.wr_id;
 		entry->flags = kfi_ibv_comp_flags(&_cq->wc);
-		if (_cq->wc.wc_flags & IB_WC_WITH_IMM) {
+		if (_cq->wc.wc_flags & IB_WC_WITH_IMM)
 			entry->data = _cq->wc.ex.imm_data;
-		} else {
+		else
 			entry->data = 0;
-		}
-		if (_cq->wc.opcode & (IB_WC_RECV | IB_WC_RECV_RDMA_WITH_IMM)) {
+
+		if (_cq->wc.opcode & (IB_WC_RECV | IB_WC_RECV_RDMA_WITH_IMM))
 			entry->len = _cq->wc.byte_len;
-		} else {
+		else
 			entry->len = 0;
-		}
+
 		entry += 1;
 	}
 exit:
@@ -1753,9 +1900,8 @@ kfi_ibv_pep_close(kfid_t fid)
 
 	pep = container_of(fid, struct kfi_ibv_pep, pep_fid.fid);
 	fab = pep->fab;
-	if (pep->eq) {
+	if (pep->eq)
 		ret = kfi_ibv_pep_unbind(fid, &pep->eq->eq_fid.fid);
-	}
 
 	mutex_lock(&pep->mut);
 	if (pep->id) {
@@ -1837,7 +1983,7 @@ kfi_ibv_pep_listen(struct kfid_pep *pep)
 
 static int
 kfi_ibv_pep_reject(struct kfid_pep *pep, kfid_t handle,
-                const void *param, size_t paramlen)
+		   const void *param, size_t paramlen)
 {
 	struct kfi_ibv_connreq *connreq = NULL;
 	struct kfi_ibv_ep *ep = NULL;
@@ -1845,7 +1991,13 @@ kfi_ibv_pep_reject(struct kfid_pep *pep, kfid_t handle,
 
 	kfi_ref_id(&pep->fid);
 	connreq = container_of(handle, struct kfi_ibv_connreq, handle);
+
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+	ret = rdma_reject(connreq->id, param, (uint8_t) paramlen,
+			  IB_CM_REJ_UNSUPPORTED);
+#else
 	ret = rdma_reject(connreq->id, param, (uint8_t) paramlen);
+#endif
 	/*
 	 * Clean up if connection request is already associated with
 	 * an endpoint.
@@ -1879,19 +2031,17 @@ kfi_ibv_ep_close(kfid_t fid)
 	ep = container_of(fid, struct kfi_ibv_ep, ep_fid.fid);
 	domain = ep->domain;
 
-	if (ep->eq) {
+	if (ep->eq)
 		ret = kfi_ibv_ep_unbind(fid, &ep->eq->eq_fid.fid, 0);
-	}
-	if (ep->scq) {
+	if (ep->scq)
 		ret = kfi_ibv_ep_unbind(fid, &ep->scq->cq_fid.fid, KFI_SEND);
-	}
-	if (ep->rcq) {
+	if (ep->rcq)
 		ret = kfi_ibv_ep_unbind(fid, &ep->rcq->cq_fid.fid, KFI_RECV);
-	}
 
 	mutex_lock(&ep->mut);
 	if (ep->handle) {
-		connreq = container_of(ep->handle, struct kfi_ibv_connreq, handle);
+		connreq = container_of(ep->handle, struct kfi_ibv_connreq,
+				       handle);
 		connreq->ep = NULL;
 		connreq->id = NULL;
 		kfi_deref_id(fid);
@@ -1907,12 +2057,8 @@ kfi_ibv_ep_close(kfid_t fid)
 	mutex_unlock(&ep->mut);
 
 	kfi_close_id(fid);
-	if (ep->tx_attr) {
-		kfree(ep->tx_attr);
-	}
-	if (ep->rx_attr) {
-		kfree(ep->rx_attr);
-	}
+	kfree(ep->tx_attr);
+	kfree(ep->rx_attr);
 	kfree(ep);
 	kfi_deref_id(&domain->domain_fid.fid);
 	return ret;
@@ -1983,7 +2129,7 @@ static int
 kfi_ibv_ep_control(struct kfid *fid, int command, void *arg)
 {
 	struct kfi_ibv_ep *ep = NULL;
-	struct ib_qp_init_attr attr = {0};
+	struct ib_qp_init_attr attr = {};
 	int ret = 0;
 
 	kfi_ref_id(fid);
@@ -2062,19 +2208,18 @@ kfi_ibv_ep_getpeer(struct kfid_ep *ep, void *addr, size_t *addrlen)
 
 static int
 kfi_ibv_ep_connect(struct kfid_ep *ep, const void *addr, const void *param,
-                size_t paramlen)
+		   size_t paramlen)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct rdma_conn_param conn_param = {0};
+	struct rdma_conn_param conn_param = {};
 	int ret = 0;
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 	if (!_ep->id->qp) {
 		ret = ep->fid.ops->control(&ep->fid, KFI_ENABLE, NULL);
-		if (ret) {
+		if (ret)
 			goto exit_nolock;
-		}
 	}
 
 	mutex_lock(&_ep->mut);
@@ -2096,16 +2241,15 @@ static int
 kfi_ibv_ep_accept(struct kfid_ep *ep, const void *param, size_t paramlen)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct rdma_conn_param conn_param = {0};
+	struct rdma_conn_param conn_param = {};
 	int ret = 0;
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 	if (!_ep->id->qp) {
 		ret = ep->fid.ops->control(&ep->fid, KFI_ENABLE, NULL);
-		if (ret) {
+		if (ret)
 			goto exit_nolock;
-		}
 	}
 
 	mutex_lock(&_ep->mut);
@@ -2133,11 +2277,11 @@ kfi_ibv_ep_shutdown(struct kfid_ep *ep, uint64_t flags)
 	mutex_lock(&_ep->mut);
 	ret = rdma_disconnect(_ep->id);
 	mutex_unlock(&_ep->mut);
-	if (ret) {
+	if (ret)
 		goto exit;
-	}
+
 	wait_for_completion_timeout(&_ep->conn.close_comp,
-	                msecs_to_jiffies(def_cm_to_ms));
+				    msecs_to_jiffies(def_cm_to_ms));
 	if (_ep->conn.status != RDMA_CM_EVENT_DISCONNECTED) {
 		LOG_INFO("Disconnected stats %d.", _ep->conn.status);
 		ret = -EBUSY;
@@ -2149,10 +2293,10 @@ exit:
 
 static ssize_t
 kfi_ibv_ep_recv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
-                kfi_addr_t src_addr, void *context)
+		kfi_addr_t src_addr, void *context)
 {
-	struct kvec iov = {0};
-	struct kfi_msg msg = {0};
+	struct kvec iov = {};
+	struct kfi_msg msg = {};
 
 	iov.iov_base = buf;
 	iov.iov_len = len;
@@ -2167,9 +2311,9 @@ kfi_ibv_ep_recv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 
 static ssize_t
 kfi_ibv_ep_recvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
-                size_t count, kfi_addr_t src_addr, void *context)
+		 size_t count, kfi_addr_t src_addr, void *context)
 {
-	struct kfi_msg msg = {0};
+	struct kfi_msg msg = {};
 
 	msg.msg_iov = iov;
 	msg.desc = desc;
@@ -2180,10 +2324,11 @@ kfi_ibv_ep_recvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 }
 
 static ssize_t
-kfi_ibv_ep_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags)
+kfi_ibv_ep_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
+		   uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_recv_wr wr = {0}, *bad = NULL;
+	struct ib_recv_wr wr = {};
 	struct ib_sge *sge = NULL;
 	ssize_t ret = 0;
 	int i = 0;
@@ -2200,34 +2345,62 @@ kfi_ibv_ep_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags
 		}
 	}
 	for (i = 0; i < msg->iov_count; i++) {
+		struct kfi_ibv_mem_desc *md =
+			(struct kfi_ibv_mem_desc *) msg->desc[i];
 		ret = kfi_ibv_fill_sge(msg->msg_iov[i].iov_base,
-		                      msg->msg_iov[i].iov_len, msg->desc[i],
-		                      &sge[i]);
-		if (ret) {
+				       msg->msg_iov[i].iov_len, msg->desc[i],
+				       &sge[i]);
+
+		/* Override the the lkey with the global lkey */
+		sge[i].lkey = md->global_lkey;
+		if (ret)
 			goto exit;
-		}
 	}
 	wr.sg_list = sge;
 	wr.num_sge = msg->iov_count;
 	wr.wr_id = (uintptr_t) msg->context;
 	wr.next = NULL;
-	ret = ib_post_recv(_ep->id->qp, &wr, &bad);
+
+	ret = ib_post_recv(_ep->id->qp, &wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_recv failed ret=%d", (int)ret);
 exit:
-	if (sge) {
-		kfree(sge);
-	}
+	kfree(sge);
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
 	return ret;
 }
 
+static void
+kfi_ibv_build_reg_wr(struct ib_reg_wr *reg_wr, struct ib_send_wr *wr,
+		     struct kfi_ibv_mem_desc *md, void *context)
+{
+	/*
+	 * Fast reg work request is only need if the memory region that
+	 * has not been "enabled". So, we will chain the ib_send_wr onto
+	 * the fast reg work request. If successful, future operations
+	 * making use of this memory region should not need to issue
+	 * another fast reg work request.
+	 */
+	reg_wr->mr = md->mr;
+	reg_wr->key = md->mr->lkey;
+	reg_wr->access = md->access;
+	reg_wr->wr.opcode = IB_WR_REG_MR;
+	reg_wr->wr.num_sge = 0;
+	reg_wr->wr.send_flags = 0;
+	reg_wr->wr.wr_id = (uintptr_t) context;
+
+	/* Chain the ib_send_wr to the fast reg wr */
+	reg_wr->wr.next = wr;
+}
+
 static ssize_t
 kfi_ibv_ep_send(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
-                kfi_addr_t dest_addr, void *context)
+		kfi_addr_t dest_addr, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kvec iov = {0};
-	struct kfi_msg msg = {0};
+	struct kvec iov = {};
+	struct kfi_msg msg = {};
 
 	iov.iov_base = (void *)buf;
 	iov.iov_len = len;
@@ -2242,10 +2415,10 @@ kfi_ibv_ep_send(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 
 static ssize_t
 kfi_ibv_ep_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
-                size_t count, kfi_addr_t dest_addr, void *context)
+		 size_t count, kfi_addr_t dest_addr, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg msg = {0};
+	struct kfi_msg msg = {};
 
 	msg.msg_iov = iov;
 	msg.desc = desc;
@@ -2257,18 +2430,22 @@ kfi_ibv_ep_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 }
 
 static ssize_t
-kfi_ibv_ep_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags)
+kfi_ibv_ep_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
+		   uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_send_wr wr = {}, *post_wr = NULL;
 	struct ib_sge *sge = NULL;
 	ssize_t ret = 0;
 	size_t i = 0, len = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 
 	mutex_lock(&_ep->mut);
+
 	wr.send_flags = 0;
 	if (msg->iov_count) {
 		sge = kzalloc(sizeof(*sge)*(msg->iov_count), GFP_KERNEL);
@@ -2279,22 +2456,23 @@ kfi_ibv_ep_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags
 	}
 	for (len = 0, i = 0; i < msg->iov_count; i++) {
 		ret = kfi_ibv_fill_sge(msg->msg_iov[i].iov_base,
-		                      msg->msg_iov[i].iov_len, msg->desc[i],
-		                      &sge[i]);
-		if (ret) {
+				       msg->msg_iov[i].iov_len, msg->desc[i],
+				       &sge[i]);
+		if (ret)
 			goto exit;
-		}
+
 		len += sge[i].length;
 	}
-	if (flags & KFI_INJECT && len <= _ep->tx_attr->inject_size) {
+
+	if (flags & KFI_INJECT && len <= _ep->tx_attr->inject_size)
 		wr.send_flags |= IB_SEND_INLINE;
-	}
+
 	wr.sg_list = sge;
 	wr.num_sge = msg->iov_count;
 
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
 		wr.send_flags |= IB_SEND_SIGNALED;
-	}
+
 	wr.wr_id = (uintptr_t) msg->context;
 	wr.next = NULL;
 	if (flags & KFI_REMOTE_CQ_DATA) {
@@ -2304,11 +2482,22 @@ kfi_ibv_ep_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags
 		wr.opcode = IB_WR_SEND;
 	}
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
-exit:
-	if (sge) {
-		kfree(sge);
+	/* If this is the first time this MR is used, need additional Reg WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, &wr, md, msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = &wr;
 	}
+
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
+exit:
+	kfree(sge);
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
 	return ret;
@@ -2316,11 +2505,11 @@ exit:
 
 static ssize_t
 kfi_ibv_ep_senddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
-                uint64_t data, kfi_addr_t dest_addr, void *context)
+		    uint64_t data, kfi_addr_t dest_addr, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kvec iov = {0};
-	struct kfi_msg msg = {0};
+	struct kvec iov = {};
+	struct kfi_msg msg = {};
 
 	iov.iov_base = (void *)buf;
 	iov.iov_len = len;
@@ -2331,17 +2520,19 @@ kfi_ibv_ep_senddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 	msg.data = data;
 
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
-	return kfi_ibv_ep_sendmsg(ep, &msg, KFI_REMOTE_CQ_DATA | _ep->tx_attr->op_flags);
+	return kfi_ibv_ep_sendmsg(ep, &msg,
+				  KFI_REMOTE_CQ_DATA | _ep->tx_attr->op_flags);
 }
 
 static ssize_t
 kfi_ibv_ep_rma_read(struct kfid_ep *ep, void *buf, size_t len, void *desc,
-                kfi_addr_t src_addr, uint64_t addr, uint64_t key, void *context)
+		    kfi_addr_t src_addr, uint64_t addr, uint64_t key,
+		    void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_rma msg = {0};
-	struct kvec iov = {0};
-	struct kfi_rma_iov rma_iov = {0};
+	struct kfi_msg_rma msg = {};
+	struct kvec iov = {};
+	struct kfi_rma_iov rma_iov = {};
 
 	msg.desc = &desc;
 	msg.addr = src_addr;
@@ -2360,12 +2551,12 @@ kfi_ibv_ep_rma_read(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 
 static ssize_t
 kfi_ibv_ep_rma_readv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
-                size_t count, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
-                void *context)
+		     size_t count, kfi_addr_t src_addr, uint64_t addr,
+		     uint64_t key, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_rma msg = {0};
-	struct kfi_rma_iov rma_iov = {0};
+	struct kfi_msg_rma msg = {};
+	struct kfi_rma_iov rma_iov = {};
 
 	msg.msg_iov = iov;
 	msg.desc = desc;
@@ -2382,20 +2573,24 @@ kfi_ibv_ep_rma_readv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 static ssize_t
 kfi_ibv_ep_rma_readmsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
-                uint64_t flags)
+		       uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_rdma_wr rdma_wr = {};
+	struct ib_send_wr *post_wr = NULL;
 	struct ib_sge *sge = NULL;
 	size_t i = 0;
 	ssize_t ret = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 
 	mutex_lock(&_ep->mut);
+
 	if (msg->iov_count) {
-		sge = kzalloc(sizeof(*sge)*msg->iov_count, GFP_KERNEL);
+		sge = kcalloc(msg->iov_count, sizeof(*sge), GFP_KERNEL);
 		if (!sge) {
 			ret = -ENOMEM;
 			goto exit;
@@ -2403,46 +2598,56 @@ kfi_ibv_ep_rma_readmsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 	}
 	for (i = 0; i < msg->iov_count; i++) {
 		ret = kfi_ibv_fill_sge(msg->msg_iov[i].iov_base,
-		                      msg->msg_iov[i].iov_len, msg->desc[i],
-		                      &sge[i]);
-		if (ret) {
+				       msg->msg_iov[i].iov_len, msg->desc[i],
+				       &sge[i]);
+		if (ret)
 			goto exit;
-		}
 	}
-	wr.sg_list = sge;
-	wr.num_sge = msg->iov_count;
+	rdma_wr.wr.sg_list = sge;
+	rdma_wr.wr.num_sge = msg->iov_count;
+	rdma_wr.wr.opcode = IB_WR_RDMA_READ;
+	rdma_wr.wr.wr_id = (uintptr_t) msg->context;
+	rdma_wr.wr.next = NULL;
+	rdma_wr.remote_addr = msg->rma_iov->addr;
+	rdma_wr.rkey = (uint32_t) msg->rma_iov->key;
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
+		rdma_wr.wr.send_flags |= IB_SEND_SIGNALED;
 
-	wr.opcode = IB_WR_RDMA_READ;
-	wr.wr_id = (uintptr_t) msg->context;
-	wr.next = NULL;
-	wr.wr.rdma.remote_addr = msg->rma_iov->addr;
-	wr.wr.rdma.rkey = (uint32_t) msg->rma_iov->key;
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
-		wr.send_flags |= IB_SEND_SIGNALED;
+	/* If this is the first time this MR is used, need additional Reg WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, &rdma_wr.wr, md,
+				     msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = &rdma_wr.wr;
 	}
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
 exit:
-	if (sge) {
-		kfree(sge);
-	}
+	kfree(sge);
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
 	return ret;
 }
 
 static ssize_t
-kfi_ibv_ep_rma_write(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
-                kfi_addr_t dest_addr, uint64_t addr, uint64_t key, void *context)
+kfi_ibv_ep_rma_write(struct kfid_ep *ep, const void *buf, size_t len,
+		     void *desc, kfi_addr_t dest_addr, uint64_t addr,
+		     uint64_t key, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_rma msg = {0};
-	struct kvec iov = {0};
-	struct kfi_rma_iov rma_iov = {0};
+	struct kfi_msg_rma msg = {};
+	struct kvec iov = {};
+	struct kfi_rma_iov rma_iov = {};
 
 	msg.desc = &desc;
 	msg.context = context;
-	iov.iov_base = (void*)buf;
+	iov.iov_base = (void *)buf;
 	iov.iov_len = len;
 	rma_iov.addr = addr;
 	rma_iov.key = key;
@@ -2456,12 +2661,12 @@ kfi_ibv_ep_rma_write(struct kfid_ep *ep, const void *buf, size_t len, void *desc
 
 static ssize_t
 kfi_ibv_ep_rma_writev(struct kfid_ep *ep, const struct kvec *iov, void **desc,
-                size_t count, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                void *context)
+		      size_t count, kfi_addr_t dest_addr, uint64_t addr,
+		      uint64_t key, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_rma msg = {0};
-	struct kfi_rma_iov rma_iov = {0};
+	struct kfi_msg_rma msg = {};
+	struct kfi_rma_iov rma_iov = {};
 
 	msg.desc = desc;
 	msg.context = context;
@@ -2477,21 +2682,25 @@ kfi_ibv_ep_rma_writev(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 static ssize_t
 kfi_ibv_ep_rma_writemsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
-                uint64_t flags)
+			uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_rdma_wr rdma_wr = {};
+	struct ib_send_wr *post_wr = NULL;
 	struct ib_sge *sge = NULL;
 	size_t i = 0, len = 0;
 	ssize_t ret = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 
 	mutex_lock(&_ep->mut);
-	wr.send_flags = 0;
+
+	rdma_wr.wr.send_flags = 0;
 	if (msg->iov_count) {
-		sge = kzalloc(sizeof(*sge)*msg->iov_count, GFP_KERNEL);
+		sge = kcalloc(msg->iov_count, sizeof(*sge), GFP_KERNEL);
 		if (!sge) {
 			ret = -ENOMEM;
 			goto exit;
@@ -2499,37 +2708,50 @@ kfi_ibv_ep_rma_writemsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 	}
 	for (len = 0, i = 0; i < msg->iov_count; i++) {
 		ret = kfi_ibv_fill_sge(msg->msg_iov[i].iov_base,
-		                      msg->msg_iov[i].iov_len, msg->desc[i],
-		                      &sge[i]);
-		if (ret) {
+				       msg->msg_iov[i].iov_len, msg->desc[i],
+				       &sge[i]);
+		if (ret)
 			goto exit;
-		}
+
 		len += sge[i].length;
 	}
-	if (flags & KFI_INJECT && len <= _ep->tx_attr->inject_size) {
-		wr.send_flags |= IB_SEND_INLINE;
-	}
-	wr.sg_list = sge;
-	wr.num_sge = msg->iov_count;
+	if (flags & KFI_INJECT && len <= _ep->tx_attr->inject_size)
+		rdma_wr.wr.send_flags |= IB_SEND_INLINE;
 
-	wr.wr_id = (uintptr_t)msg->context;
-	wr.next = NULL;
-	wr.opcode = IB_WR_RDMA_WRITE;
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
-		wr.send_flags |= IB_SEND_SIGNALED;
-	}
+	rdma_wr.wr.sg_list = sge;
+	rdma_wr.wr.num_sge = msg->iov_count;
+
+	rdma_wr.wr.wr_id = (uintptr_t)msg->context;
+	rdma_wr.wr.next = NULL;
+	rdma_wr.wr.opcode = IB_WR_RDMA_WRITE;
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
+		rdma_wr.wr.send_flags |= IB_SEND_SIGNALED;
+
 	if (flags & KFI_REMOTE_CQ_DATA) {
-		wr.opcode = IB_WR_RDMA_WRITE_WITH_IMM;
-		wr.ex.imm_data = (uint32_t) msg->data;
+		rdma_wr.wr.opcode = IB_WR_RDMA_WRITE_WITH_IMM;
+		rdma_wr.wr.ex.imm_data = (uint32_t) msg->data;
 	}
-	wr.wr.rdma.remote_addr = msg->rma_iov->addr;
-	wr.wr.rdma.rkey = (uint32_t) msg->rma_iov->key;
+	rdma_wr.remote_addr = msg->rma_iov->addr;
+	rdma_wr.rkey = (uint32_t) msg->rma_iov->key;
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
-exit:
-	if (sge) {
-		kfree(sge);
+	/* If this is the first time this MR is used, need additional Reg WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, &rdma_wr.wr, md,
+				     msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = &rdma_wr.wr;
 	}
+
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
+exit:
+
+	kfree(sge);
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
 	return ret;
@@ -2537,17 +2759,17 @@ exit:
 
 static ssize_t
 kfi_ibv_ep_rma_writedata(struct kfid_ep *ep, const void *buf, size_t len,
-                void *desc, uint64_t data, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, void *context)
+			 void *desc, uint64_t data, kfi_addr_t dest_addr,
+			 uint64_t addr, uint64_t key, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_rma msg = {0};
-	struct kvec iov = {0};
-	struct kfi_rma_iov rma_iov = {0};
+	struct kfi_msg_rma msg = {};
+	struct kvec iov = {};
+	struct kfi_rma_iov rma_iov = {};
 
 	msg.desc = &desc;
 	msg.context = context;
-	iov.iov_base = (void*)buf;
+	iov.iov_base = (void *)buf;
 	iov.iov_len = len;
 	rma_iov.addr = addr;
 	rma_iov.key = key;
@@ -2558,22 +2780,22 @@ kfi_ibv_ep_rma_writedata(struct kfid_ep *ep, const void *buf, size_t len,
 
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 	return kfi_ibv_ep_rma_writemsg(ep, &msg,
-	                       KFI_REMOTE_CQ_DATA | _ep->tx_attr->op_flags);
+		KFI_REMOTE_CQ_DATA | _ep->tx_attr->op_flags);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_write(struct kfid_ep *ep, const void *buf, size_t count,
-                void *desc, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                enum kfi_datatype datatype, enum kfi_op op, void *context)
+			void *desc, kfi_addr_t dest_addr, uint64_t addr,
+			uint64_t key, enum kfi_datatype datatype,
+			enum kfi_op op, void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_atomic msg = {0};
-	struct kfi_ioc msg_iov = {0};
-	struct kfi_rma_ioc rma_iov = {0};
+	struct kfi_msg_atomic msg = {};
+	struct kfi_ioc msg_iov = {};
+	struct kfi_rma_ioc rma_iov = {};
 
-	if (count != 1) {
+	if (count != 1)
 		return -E2BIG;
-	}
 
 	msg_iov.count = 1;
 	msg_iov.addr = (void *)buf;
@@ -2597,26 +2819,29 @@ kfi_ibv_ep_atomic_write(struct kfid_ep *ep, const void *buf, size_t count,
 
 static ssize_t
 kfi_ibv_ep_atomic_writev(struct kfid_ep *ep, const struct kfi_ioc *iov,
-                void **desc, size_t count, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, enum kfi_datatype datatype, enum kfi_op op,
-                void *context)
+			 void **desc, size_t count, kfi_addr_t dest_addr,
+			 uint64_t addr, uint64_t key,
+			 enum kfi_datatype datatype, enum kfi_op op,
+			 void *context)
 {
-	if (iov->count != 1) {
+	if (iov->count != 1)
 		return -E2BIG;
-	}
 
 	return kfi_ibv_ep_atomic_write(ep, iov->addr, count, desc[0], dest_addr,
-	                        addr, key, datatype, op, context);
+				       addr, key, datatype, op, context);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_writemsg(struct kfid_ep *ep, const struct kfi_msg_atomic *msg,
-                uint64_t flags)
+			   uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
-	struct ib_sge sge = {0};
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_rdma_wr rdma_wr = {};
+	struct ib_send_wr *post_wr = NULL;
+	struct ib_sge sge = {};
 	int ret = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
@@ -2647,31 +2872,45 @@ kfi_ibv_ep_atomic_writemsg(struct kfid_ep *ep, const struct kfi_msg_atomic *msg,
 	}
 
 	if (flags & KFI_REMOTE_CQ_DATA) {
-		wr.opcode = IB_WR_RDMA_WRITE_WITH_IMM;
-		wr.ex.imm_data = (uint32_t) msg->data;
+		rdma_wr.wr.opcode = IB_WR_RDMA_WRITE_WITH_IMM;
+		rdma_wr.wr.ex.imm_data = (uint32_t) msg->data;
 	} else {
-		wr.opcode = IB_WR_RDMA_WRITE;
+		rdma_wr.wr.opcode = IB_WR_RDMA_WRITE;
 	}
-	wr.wr.rdma.remote_addr = msg->rma_iov->addr;
-	wr.wr.rdma.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
+	rdma_wr.remote_addr = msg->rma_iov->addr;
+	rdma_wr.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
 
-	ret = kfi_ibv_fill_sge(msg->msg_iov->addr, sizeof(uint64_t), msg->desc[0], &sge);
-	if (ret) {
+	ret = kfi_ibv_fill_sge(msg->msg_iov->addr, sizeof(uint64_t),
+			       msg->desc[0], &sge);
+	if (ret)
 		goto exit;
-	}
-	wr.sg_list = &sge;
-	wr.num_sge = 1;
-	wr.send_flags = IB_SEND_FENCE;
-	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size) {
-		wr.send_flags |= IB_SEND_INLINE;
-	}
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
-		wr.send_flags |= IB_SEND_SIGNALED;
-	}
-	wr.wr_id = (uintptr_t)msg->context;
-	wr.next = NULL;
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
+	rdma_wr.wr.sg_list = &sge;
+	rdma_wr.wr.num_sge = 1;
+	rdma_wr.wr.send_flags = IB_SEND_FENCE;
+	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size)
+		rdma_wr.wr.send_flags |= IB_SEND_INLINE;
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
+		rdma_wr.wr.send_flags |= IB_SEND_SIGNALED;
+
+	rdma_wr.wr.wr_id = (uintptr_t)msg->context;
+	rdma_wr.wr.next = NULL;
+
+	/* If this is the first time this MR is used, need additional WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, &rdma_wr.wr, md,
+				     msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = &rdma_wr.wr;
+	}
+
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
 exit:
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
@@ -2680,15 +2919,16 @@ exit:
 
 static ssize_t
 kfi_ibv_ep_atomic_readwrite(struct kfid_ep *ep, const void *buf, size_t count,
-                void *desc, void *result, void *result_desc, kfi_addr_t dest_addr,
-                uint64_t addr, uint64_t key, enum kfi_datatype datatype,
-                enum kfi_op op, void *context)
+			    void *desc, void *result, void *result_desc,
+			    kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+			    enum kfi_datatype datatype, enum kfi_op op,
+			    void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_atomic msg = {0};
-	struct kfi_rma_ioc rma_iov = {0};
-	struct kfi_ioc msg_iov = {0};
-	struct kfi_ioc resultv = {0};
+	struct kfi_msg_atomic msg = {};
+	struct kfi_rma_ioc rma_iov = {};
+	struct kfi_ioc msg_iov = {};
+	struct kfi_ioc resultv = {};
 
 	if (count != 1)
 		return -E2BIG;
@@ -2714,32 +2954,41 @@ kfi_ibv_ep_atomic_readwrite(struct kfid_ep *ep, const void *buf, size_t count,
 
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
 	return kfi_ibv_ep_atomic_readwritemsg(ep, &msg, &resultv, &result_desc,
-	                       1, _ep->tx_attr->op_flags);
+					      1, _ep->tx_attr->op_flags);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_readwritev(struct kfid_ep *ep, const struct kfi_ioc *iov,
-                void **desc, size_t count, struct kfi_ioc *resultv,
-                void **result_desc, size_t result_count, kfi_addr_t dest_addr,
-                uint64_t addr, uint64_t key, enum kfi_datatype datatype,
-                enum kfi_op op, void *context)
+			     void **desc, size_t count, struct kfi_ioc *resultv,
+			     void **result_desc, size_t result_count,
+			     kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+			     enum kfi_datatype datatype, enum kfi_op op,
+			     void *context)
 {
 	if (iov->count != 1)
 		return -E2BIG;
 
 	return kfi_ibv_ep_atomic_readwrite(ep, iov->addr, count, desc[0],
-	                       resultv->addr, result_desc[0], dest_addr, addr, key, datatype, op, context);
+					   resultv->addr, result_desc[0],
+					   dest_addr, addr, key, datatype,
+					   op, context);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_readwritemsg(struct kfid_ep *ep,
-                const struct kfi_msg_atomic *msg, struct kfi_ioc *resultv,
-                void **result_desc, size_t result_count, uint64_t flags)
+			       const struct kfi_msg_atomic *msg,
+			       struct kfi_ioc *resultv,
+			       void **result_desc, size_t result_count,
+			       uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
-	struct ib_sge sge = {0};
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_rdma_wr rdma_wr = {};
+	struct ib_atomic_wr atomic_wr = {};
+	struct ib_send_wr *post_wr = NULL, *wr = NULL;
+	struct ib_sge sge = {};
 	int ret = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
@@ -2767,41 +3016,54 @@ kfi_ibv_ep_atomic_readwritemsg(struct kfid_ep *ep,
 
 	switch (msg->op) {
 	case KFI_ATOMIC_READ:
-		wr.opcode = IB_WR_RDMA_READ;
-		wr.wr.rdma.remote_addr = msg->rma_iov->addr;
-		wr.wr.rdma.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
+		rdma_wr.wr.opcode = IB_WR_RDMA_READ;
+		rdma_wr.remote_addr = msg->rma_iov->addr;
+		rdma_wr.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
+		wr = &rdma_wr.wr;
 		break;
 	case KFI_SUM:
-		wr.opcode = IB_WR_ATOMIC_FETCH_AND_ADD;
-		wr.wr.atomic.remote_addr = msg->rma_iov->addr;
-		wr.wr.atomic.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
-		wr.wr.atomic.compare_add = *(uint64_t *)msg->msg_iov->addr;
-		wr.wr.atomic.swap = 0;
+		atomic_wr.wr.opcode = IB_WR_ATOMIC_FETCH_AND_ADD;
+		atomic_wr.remote_addr = msg->rma_iov->addr;
+		atomic_wr.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
+		atomic_wr.compare_add = *(uint64_t *)msg->msg_iov->addr;
+		atomic_wr.swap = 0;
+		wr = &atomic_wr.wr;
 		break;
 	default:
 		return -ENOSYS;
 	}
 
-	ret = kfi_ibv_fill_sge(resultv->addr, sizeof(uint64_t), result_desc[0], &sge);
-	if (ret) {
+	ret = kfi_ibv_fill_sge(resultv->addr, sizeof(uint64_t), result_desc[0],
+			       &sge);
+	if (ret)
 		goto exit;
-	}
-	wr.sg_list = &sge;
-	wr.num_sge = 1;
-	wr.wr_id = (uintptr_t)msg->context;
-	wr.next = NULL;
-	wr.send_flags = IB_SEND_FENCE;
-	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size) {
-		wr.send_flags |= IB_SEND_INLINE;
-	}
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
-		wr.send_flags |= IB_SEND_SIGNALED;
-	}
-	if (flags & KFI_REMOTE_CQ_DATA) {
-		wr.ex.imm_data = (uint32_t) msg->data;
+
+	wr->sg_list = &sge;
+	wr->num_sge = 1;
+	wr->wr_id = (uintptr_t)msg->context;
+	wr->next = NULL;
+	wr->send_flags = IB_SEND_FENCE;
+	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size)
+		wr->send_flags |= IB_SEND_INLINE;
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
+		wr->send_flags |= IB_SEND_SIGNALED;
+	if (flags & KFI_REMOTE_CQ_DATA)
+		wr->ex.imm_data = (uint32_t) msg->data;
+
+	/* If this is the first time this MR is used, need additional Reg WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, wr, md, msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = wr;
 	}
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
 exit:
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
@@ -2810,17 +3072,18 @@ exit:
 
 static ssize_t
 kfi_ibv_ep_atomic_compwrite(struct kfid_ep *ep, const void *buf, size_t count,
-                void *desc, const void *compare, void *compare_desc, void *result,
-                void *result_desc, kfi_addr_t dest_addr, uint64_t addr,
-                uint64_t key, enum kfi_datatype datatype, enum kfi_op op,
-                void *context)
+			    void *desc, const void *compare, void *compare_desc,
+			    void *result, void *result_desc,
+			    kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+			    enum kfi_datatype datatype, enum kfi_op op,
+			    void *context)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct kfi_msg_atomic msg = {0};
-	struct kfi_ioc msg_iov = {0};
-	struct kfi_rma_ioc rma_iov = {0};
-	struct kfi_ioc resultv = {0};
-	struct kfi_ioc comparev = {0};
+	struct kfi_msg_atomic msg = {};
+	struct kfi_ioc msg_iov = {};
+	struct kfi_rma_ioc rma_iov = {};
+	struct kfi_ioc resultv = {};
+	struct kfi_ioc comparev = {};
 
 	if (count != 1)
 		return -E2BIG;
@@ -2844,43 +3107,52 @@ kfi_ibv_ep_atomic_compwrite(struct kfid_ep *ep, const void *buf, size_t count,
 	resultv.addr = result;
 	resultv.count = 1;
 
-	comparev.addr = (void*)compare;
+	comparev.addr = (void *)compare;
 	comparev.count = 1;
 
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
-	return kfi_ibv_ep_atomic_compwritemsg(ep, &msg, &comparev, &compare_desc,
-	                       1, &resultv, &result_desc, 1, _ep->tx_attr->op_flags);
+	return kfi_ibv_ep_atomic_compwritemsg(ep, &msg, &comparev,
+					      &compare_desc, 1, &resultv,
+					      &result_desc, 1,
+					      _ep->tx_attr->op_flags);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_compwritev(struct kfid_ep *ep, const struct kfi_ioc *iov,
-                void **desc, size_t count, const struct kfi_ioc *comparev,
-                void **compare_desc, size_t compare_count,
-                struct kfi_ioc *resultv, void **result_desc, size_t result_count,
-                kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
-                enum kfi_datatype datatype, enum kfi_op op, void *context)
+			     void **desc, size_t count,
+			     const struct kfi_ioc *comparev,
+			     void **compare_desc, size_t compare_count,
+			     struct kfi_ioc *resultv, void **result_desc,
+			     size_t result_count, kfi_addr_t dest_addr,
+			     uint64_t addr, uint64_t key,
+			     enum kfi_datatype datatype, enum kfi_op op,
+			     void *context)
 {
-	if (iov->count != 1) {
+	if (iov->count != 1)
 		return -E2BIG;
-	}
 
 	return kfi_ibv_ep_atomic_compwrite(ep, iov->addr, count, desc[0],
-	                       comparev->addr, compare_desc[0], resultv->addr,
-	                       result_desc[0], dest_addr, addr, key, datatype,
-	                       op, context);
+					   comparev->addr, compare_desc[0],
+					   resultv->addr, result_desc[0],
+					   dest_addr, addr, key, datatype,
+					   op, context);
 }
 
 static ssize_t
 kfi_ibv_ep_atomic_compwritemsg(struct kfid_ep *ep,
-                const struct kfi_msg_atomic *msg, const struct kfi_ioc *comparev,
-                void **compare_desc, size_t compare_count,
-                struct kfi_ioc *resultv, void **result_desc, size_t result_count,
-                uint64_t flags)
+			       const struct kfi_msg_atomic *msg,
+			       const struct kfi_ioc *comparev,
+			       void **compare_desc, size_t compare_count,
+			       struct kfi_ioc *resultv, void **result_desc,
+			       size_t result_count, uint64_t flags)
 {
 	struct kfi_ibv_ep *_ep = NULL;
-	struct ib_send_wr wr = {0}, *bad = NULL;
-	struct ib_sge sge = {0};
+	struct ib_reg_wr fast_reg_wr = {};
+	struct ib_atomic_wr atomic_wr = {};
+	struct ib_send_wr *post_wr = NULL;
+	struct ib_sge sge = {};
 	int ret = 0;
+	struct kfi_ibv_mem_desc *md = msg->desc[0];
 
 	kfi_ref_id(&ep->fid);
 	_ep = container_of(ep, struct kfi_ibv_ep, ep_fid);
@@ -2897,7 +3169,7 @@ kfi_ibv_ep_atomic_compwritemsg(struct kfid_ep *ep,
 		goto exit;
 	}
 
-	switch(msg->datatype) {
+	switch (msg->datatype) {
 	case KFI_INT64:
 	case KFI_UINT64:
 #if __BITS_PER_LONG == 64
@@ -2910,34 +3182,44 @@ kfi_ibv_ep_atomic_compwritemsg(struct kfid_ep *ep,
 		goto exit;
 	}
 
-	wr.send_flags = IB_SEND_FENCE;
-	wr.opcode = IB_WR_ATOMIC_CMP_AND_SWP;
-	wr.wr_id = (uintptr_t) msg->context;
-	wr.next = NULL;
+	atomic_wr.wr.send_flags = IB_SEND_FENCE;
+	atomic_wr.wr.opcode = IB_WR_ATOMIC_CMP_AND_SWP;
+	atomic_wr.wr.wr_id = (uintptr_t) msg->context;
+	atomic_wr.wr.next = NULL;
 
-	wr.wr.atomic.remote_addr = msg->rma_iov->addr;
-	//wr.wr.atomic.compare_add = (uintptr_t)comparev->addr;
-	wr.wr.atomic.compare_add = *(uint64_t *)comparev->addr;
-	wr.wr.atomic.swap = *(uint64_t *)msg->msg_iov->addr;
-	//wr.wr.atomic.swap = (uintptr_t)msg->addr;
-	wr.wr.atomic.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
-	ret = kfi_ibv_fill_sge(resultv->addr, sizeof(uint64_t), result_desc[0], &sge);
-	if (ret) {
+	atomic_wr.remote_addr = msg->rma_iov->addr;
+	atomic_wr.compare_add = *(uint64_t *)comparev->addr;
+	atomic_wr.swap = *(uint64_t *)msg->msg_iov->addr;
+	atomic_wr.rkey = (uint32_t)(uintptr_t)msg->rma_iov->key;
+	ret = kfi_ibv_fill_sge(resultv->addr, sizeof(uint64_t), result_desc[0],
+			       &sge);
+	if (ret)
 		goto exit;
-	}
-	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size) {
-		wr.send_flags |= IB_SEND_INLINE;
-	}
-	wr.sg_list = &sge;
-	wr.num_sge = 1;
-	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE)) {
-		wr.send_flags |= IB_SEND_SIGNALED;
-	}
-	if (flags & KFI_REMOTE_CQ_DATA) {
-		wr.ex.imm_data = (uint32_t) msg->data;
+
+	if (flags & KFI_INJECT && sizeof(uint64_t) <= _ep->tx_attr->inject_size)
+		atomic_wr.wr.send_flags |= IB_SEND_INLINE;
+	atomic_wr.wr.sg_list = &sge;
+	atomic_wr.wr.num_sge = 1;
+	if (flags & (KFI_COMPLETION | KFI_TRANSMIT_COMPLETE))
+		atomic_wr.wr.send_flags |= IB_SEND_SIGNALED;
+	if (flags & KFI_REMOTE_CQ_DATA)
+		atomic_wr.wr.ex.imm_data = (uint32_t) msg->data;
+
+	/* If this is the first time this MR is used, need additional Reg WR */
+	if (!md->mem_enabled) {
+		kfi_ibv_build_reg_wr(&fast_reg_wr, &atomic_wr.wr, md,
+				     msg->context);
+		post_wr = &fast_reg_wr.wr;
+	} else {
+		post_wr = &atomic_wr.wr;
 	}
 
-	ret = ib_post_send(_ep->id->qp, &wr, &bad);
+	ret = ib_post_send(_ep->id->qp, post_wr, NULL);
+	if (ret)
+		LOG_ERR("ib_post_send failed ret=%d", (int)ret);
+	else if (!md->mem_enabled)
+		md->mem_enabled = true;
+
 exit:
 	mutex_unlock(&_ep->mut);
 	kfi_deref_id(&ep->fid);
@@ -2946,7 +3228,7 @@ exit:
 
 static int
 kfi_ibv_ep_atomic_writevalid(struct kfid_ep *ep, enum kfi_datatype datatype,
-                enum kfi_op op, size_t *count)
+			     enum kfi_op op, size_t *count)
 {
 	switch (op) {
 	case KFI_ATOMIC_WRITE:
@@ -2974,7 +3256,7 @@ kfi_ibv_ep_atomic_writevalid(struct kfid_ep *ep, enum kfi_datatype datatype,
 
 static int
 kfi_ibv_ep_atomic_readwritevalid(struct kfid_ep *ep, enum kfi_datatype datatype,
-                enum kfi_op op, size_t *count)
+				 enum kfi_op op, size_t *count)
 {
 	switch (op) {
 	case KFI_ATOMIC_READ:
@@ -3003,7 +3285,7 @@ kfi_ibv_ep_atomic_readwritevalid(struct kfid_ep *ep, enum kfi_datatype datatype,
 
 static int
 kfi_ibv_ep_atomic_compwritevalid(struct kfid_ep *ep, enum kfi_datatype datatype,
-                enum kfi_op op, size_t *count)
+				 enum kfi_op op, size_t *count)
 {
 	if (op != KFI_CSWAP)
 		return -ENOSYS;
@@ -3035,10 +3317,10 @@ kfi_ibv_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event)
 	struct kfi_ibv_pep *pep = NULL;
 	struct kfi_ibv_ep *ep = NULL;
 
-	fid = (struct kfid*)cma_id->context;
-	if (!fid) {
+	fid = (struct kfid *)cma_id->context;
+	if (!fid)
 		return 0;
-	}
+
 	kfi_ref_id(fid);
 	if (fid->fclass == KFI_CLASS_PEP) {
 		pep = container_of(fid, struct kfi_ibv_pep, pep_fid.fid);
@@ -3080,22 +3362,21 @@ kfi_ibv_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event)
 		return 0;
 	}
 
-	if (!eq) {
+	if (!eq)
 		goto exit;
-	}
 
 	_event = kzalloc(sizeof(*_event), GFP_KERNEL);
-	if (!_event) {
+	if (!_event)
 		goto exit;
-	}
+
 	INIT_LIST_HEAD(&_event->list);
 	_event->id = cma_id;
 	_event->event = *event;
 	if (event->param.conn.private_data_len) {
 		_event->event.param.conn.private_data =
-		        kmemdup(event->param.conn.private_data,
-		                        event->param.conn.private_data_len,
-		                        GFP_KERNEL);
+			kmemdup(event->param.conn.private_data,
+				event->param.conn.private_data_len,
+				GFP_KERNEL);
 		if (!_event->event.param.conn.private_data) {
 			kfree(_event);
 			goto exit;
@@ -3115,7 +3396,6 @@ exit:
 static void
 kfi_ibv_qp_handler(struct ib_event *event, void *context)
 {
-	return;
 }
 
 static void
@@ -3123,17 +3403,14 @@ kfi_ibv_cq_comp_handler(struct ib_cq *cq, void *context)
 {
 	struct kfi_ibv_cq *_cq = NULL;
 
-	_cq = (struct kfi_ibv_cq*)context;
+	_cq = (struct kfi_ibv_cq *)context;
 	_cq->new_entry = true;
 	wake_up_interruptible(&_cq->wait);
-
-	return;
 }
 
 static void
 kfi_ibv_cq_event_handler(struct ib_event *event, void *context)
 {
-	return;
 }
 
 static int
@@ -3169,13 +3446,17 @@ kfi_ibv_get_info_dev(struct ib_device *device, struct kfi_info **info)
 	}
 
 	ret = kfi_ibv_get_device_attrs(device, fi);
-	if (ret) {
+	if (ret)
 		goto err;
-	}
 
 	switch (rdma_node_get_transport(device->node_type)) {
 	case RDMA_TRANSPORT_IB:
-		if (ib_query_gid(device, 1, 0, &gid)) {
+
+#ifdef SLES15_SP0
+		if (ib_query_gid(device, 1, 0, &gid, NULL)) {
+#else
+		if (rdma_query_gid(device, 1, 0, &gid)) {
+#endif
 			ret = -EBUSY;
 			goto err;
 		}
@@ -3186,7 +3467,7 @@ kfi_ibv_get_info_dev(struct ib_device *device, struct kfi_info **info)
 			goto err;
 		}
 		snprintf(fi->fabric_attr->name, name_len, VERBS_IB_PREFIX "%lx",
-		                (long unsigned)(gid.global.subnet_prefix));
+			 (unsigned long)(gid.global.subnet_prefix));
 		fi->ep_attr->protocol = KFI_PROTO_RDMA_CM_IB_RC;
 		break;
 	case RDMA_TRANSPORT_IWARP:
@@ -3207,7 +3488,7 @@ kfi_ibv_get_info_dev(struct ib_device *device, struct kfi_info **info)
 	*info = fi;
 	return 0;
 err:
-	kfi_deallocinfo(fi);
+	kfi_freeinfo(fi);
 	return ret;
 }
 
@@ -3219,8 +3500,9 @@ kfi_ibv_find_dev(const char *fabric_name, const char *domain_name)
 
 	list_for_each(lh, &ibv_dev_list) {
 		dev = list_entry(lh, typeof(*dev), list);
-		if ((!domain_name || !strcmp(dev->info->domain_attr->name, domain_name))
-		   && (!fabric_name || !strcmp(dev->info->fabric_attr->name, fabric_name))) {
+
+		if ((!domain_name || !strcmp(dev->info->domain_attr->name, domain_name)) &&
+		    (!fabric_name || !strcmp(dev->info->fabric_attr->name, fabric_name))) {
 			return dev;
 		}
 	}
@@ -3233,11 +3515,10 @@ kfi_ibv_find_info(const char *fabric_name, const char *domain_name)
 	struct kfi_ibv_device *dev = NULL;
 
 	dev = kfi_ibv_find_dev(fabric_name, domain_name);
-	if (dev) {
+	if (dev)
 		return dev->info;
-	} else {
+	else
 		return NULL;
-	}
 }
 
 static struct kfi_info *
@@ -3248,32 +3529,31 @@ kfi_ibv_eq_cm_getinfo(struct kfi_ibv_event *event)
 	struct sockaddr *addr = NULL;
 
 	fi = kfi_ibv_find_info(NULL, event->id->device->name);
-	if (!fi) {
+	if (!fi)
 		return NULL;
-	}
+
 	info = kfi_dupinfo(fi);
-	if (!info) {
+	if (!info)
 		return NULL;
-	}
+
 	kfi_ibv_update_info(NULL, info);
 
 	addr = (struct sockaddr *)&event->id->route.addr.src_addr;
 	info->src_addrlen = kfi_ibv_sockaddr_len(addr);
 	info->src_addr = kmemdup(addr, info->src_addrlen, GFP_KERNEL);
-	if (!info->src_addr) {
+	if (!info->src_addr)
 		goto err;
-	}
+
 	addr = (struct sockaddr *)&event->id->route.addr.dst_addr;
 	info->dest_addrlen = kfi_ibv_sockaddr_len(addr);
 	info->dest_addr = kmemdup(addr, info->dest_addrlen, GFP_KERNEL);
-	if (!info->dest_addr) {
+	if (!info->dest_addr)
 		goto err;
-	}
 
 	connreq = kzalloc(sizeof(*connreq), GFP_KERNEL);
-	if (!connreq) {
+	if (!connreq)
 		goto err;
-	}
+
 	kfi_init_id(&connreq->handle);
 	connreq->id = event->id;
 	connreq->handle.fclass = KFI_CLASS_CONNREQ;
@@ -3281,43 +3561,37 @@ kfi_ibv_eq_cm_getinfo(struct kfi_ibv_event *event)
 	return info;
 
 err:
-	if (connreq) {
-		kfree(connreq);
-	}
-	kfi_deallocinfo(info);
+	kfree(connreq);
+	kfi_freeinfo(info);
 	return NULL;
 }
 
 static int
 kfi_ibv_get_device_attrs(struct ib_device *device, struct kfi_info *info)
 {
-	struct ib_device_attr device_attr = {0};
-	struct ib_port_attr port_attr = {0};
+	struct ib_port_attr port_attr = {};
 	int ret = 0;
 
-	ret = ib_query_device(device, &device_attr);
-	if (ret) {
-		return ret;
-	}
-	info->domain_attr->cq_cnt         = device_attr.max_cq;
-	info->domain_attr->ep_cnt         = device_attr.max_qp;
-	info->domain_attr->tx_ctx_cnt     = min(info->domain_attr->tx_ctx_cnt,
-	                                        (size_t)device_attr.max_qp);
-	info->domain_attr->rx_ctx_cnt     = min(info->domain_attr->rx_ctx_cnt,
-	                                        (size_t)device_attr.max_qp);
-	info->domain_attr->max_ep_tx_ctx  = device_attr.max_qp;
-	info->domain_attr->max_ep_rx_ctx  = device_attr.max_qp;
+	info->domain_attr->cq_cnt = device->attrs.max_cq;
+	info->domain_attr->ep_cnt = device->attrs.max_qp;
+	info->domain_attr->tx_ctx_cnt = min_t(size_t,
+					      info->domain_attr->tx_ctx_cnt,
+					      device->attrs.max_qp);
+	info->domain_attr->rx_ctx_cnt = min_t(size_t,
+					      info->domain_attr->rx_ctx_cnt,
+					      device->attrs.max_qp);
+	info->domain_attr->max_ep_tx_ctx  = device->attrs.max_qp;
+	info->domain_attr->max_ep_rx_ctx  = device->attrs.max_qp;
 
-	ret = kfi_ibv_get_qp_cap(device, &device_attr, info);
-	if (ret) {
+	ret = kfi_ibv_get_qp_cap(device, &device->attrs, info);
+	if (ret)
 		return ret;
-	}
 
 	ret = ib_query_port(device, 1, &port_attr);
-	if (ret) {
+	if (ret)
 		return ret;
-	}
-	info->ep_attr->max_msg_size       = port_attr.max_msg_sz;
+
+	info->ep_attr->max_msg_size = port_attr.max_msg_sz;
 	info->ep_attr->max_order_raw_size = port_attr.max_msg_sz;
 	info->ep_attr->max_order_waw_size = port_attr.max_msg_sz;
 
@@ -3326,20 +3600,24 @@ kfi_ibv_get_device_attrs(struct ib_device *device, struct kfi_info *info)
 
 static int
 kfi_ibv_get_qp_cap(struct ib_device *device, struct ib_device_attr *device_attr,
-                struct kfi_info *info)
+		   struct kfi_info *info)
 {
 	struct ib_pd *pd = NULL;
 	struct ib_cq *cq = NULL;
 	struct ib_qp *qp = NULL;
-	struct ib_qp_init_attr init_attr = {0};
+	struct ib_cq_init_attr cq_init_attr = {};
+	struct ib_qp_init_attr init_attr = {};
 	int ret = 0;
 
-	pd = ib_alloc_pd(device);
+	pd = ib_alloc_pd(device, 0);
 	if (!pd) {
 		ret = -EBUSY;
 		goto exit;
 	}
-	cq = ib_create_cq(device, NULL, NULL, NULL, 1, 0);
+
+	cq_init_attr.cqe = 1;
+	cq_init_attr.comp_vector = 0;
+	cq = ib_create_cq(device, NULL, NULL, NULL, &cq_init_attr);
 	if (!cq) {
 		ret = -EBUSY;
 		goto exit_pd;
@@ -3352,12 +3630,23 @@ kfi_ibv_get_qp_cap(struct ib_device *device, struct ib_device_attr *device_attr,
 	init_attr.cap.max_inline_data = def_inject_size;
 	init_attr.cap.max_send_sge = def_tx_iov_limit;
 	init_attr.cap.max_recv_sge = def_rx_iov_limit;
-	if (device_attr->max_sge < init_attr.cap.max_send_sge) {
+
+#ifdef SLES15_SP0
+	if (device_attr->max_sge < init_attr.cap.max_send_sge)
 		init_attr.cap.max_send_sge = device_attr->max_sge;
-	}
-	if (device_attr->max_sge < init_attr.cap.max_recv_sge) {
+#else
+	if (device_attr->max_send_sge < init_attr.cap.max_send_sge)
+		init_attr.cap.max_send_sge = device_attr->max_send_sge;
+#endif
+
+#ifdef SLES15_SP0
+	if (device_attr->max_sge < init_attr.cap.max_recv_sge)
 		init_attr.cap.max_recv_sge = device_attr->max_sge;
-	}
+#else
+	if (device_attr->max_recv_sge < init_attr.cap.max_recv_sge)
+		init_attr.cap.max_recv_sge = device_attr->max_recv_sge;
+#endif
+
 	init_attr.qp_type = IB_QPT_RC;
 
 	qp = ib_create_qp(pd, &init_attr);
@@ -3366,10 +3655,10 @@ kfi_ibv_get_qp_cap(struct ib_device *device, struct ib_device_attr *device_attr,
 		goto exit_cq;
 	}
 	info->tx_attr->inject_size = init_attr.cap.max_inline_data;
-	info->tx_attr->iov_limit   = init_attr.cap.max_send_sge;
-	info->tx_attr->size        = init_attr.cap.max_send_wr;
-	info->rx_attr->iov_limit   = init_attr.cap.max_recv_sge;
-	info->rx_attr->size        = init_attr.cap.max_recv_wr;
+	info->tx_attr->iov_limit = init_attr.cap.max_send_sge;
+	info->tx_attr->size = init_attr.cap.max_send_wr;
+	info->rx_attr->iov_limit = init_attr.cap.max_recv_sge;
+	info->rx_attr->size  = init_attr.cap.max_recv_wr;
 
 	ib_destroy_qp(qp);
 exit_cq:
@@ -3382,7 +3671,7 @@ exit:
 
 static int
 kfi_ibv_create_id(const struct kfi_info *hints, struct rdma_cm_id **id,
-                bool passive_ep)
+		  bool passive_ep)
 {
 	struct rdma_cm_id *_id = NULL;
 	struct kfi_ibv_pep *_pep = NULL;
@@ -3391,12 +3680,13 @@ kfi_ibv_create_id(const struct kfi_info *hints, struct rdma_cm_id **id,
 
 	if (passive_ep) {
 		_pep = container_of(id, struct kfi_ibv_pep, id);
-		_id = rdma_create_id(kfi_ibv_cma_handler, &_pep->pep_fid.fid,
-		                RDMA_PS_TCP, IB_QPT_RC);
+		_id = rdma_create_id(&init_net, kfi_ibv_cma_handler,
+				     &_pep->pep_fid.fid,
+				     RDMA_PS_TCP, IB_QPT_RC);
 	} else {
 		_ep = container_of(id, struct kfi_ibv_ep, id);
-		_id = rdma_create_id(kfi_ibv_cma_handler, &_ep->ep_fid.fid,
-		                RDMA_PS_TCP, IB_QPT_RC);
+		_id = rdma_create_id(&init_net, kfi_ibv_cma_handler,
+				     &_ep->ep_fid.fid, RDMA_PS_TCP, IB_QPT_RC);
 	}
 	if (IS_ERR(_id)) {
 		ret = PTR_ERR(_id);
@@ -3412,13 +3702,14 @@ kfi_ibv_create_id(const struct kfi_info *hints, struct rdma_cm_id **id,
 		}
 	} else {
 		ret = rdma_resolve_addr(_id, (struct sockaddr *)hints->src_addr,
-			(struct sockaddr *)hints->dest_addr, (int)def_cm_to_ms);
+					(struct sockaddr *)hints->dest_addr,
+					(int)def_cm_to_ms);
 		if (ret) {
 			LOG_ERR("Failed to init addr resolve.");
 			goto err_id;
 		}
 		wait_for_completion_timeout(&_ep->conn.addr_comp,
-		                msecs_to_jiffies(def_cm_to_ms));
+					    msecs_to_jiffies(def_cm_to_ms));
 		if (_ep->conn.status != RDMA_CM_EVENT_ADDR_RESOLVED) {
 			LOG_ERR("Failed to resolve addr.");
 			ret = -ENODATA;
@@ -3430,7 +3721,7 @@ kfi_ibv_create_id(const struct kfi_info *hints, struct rdma_cm_id **id,
 			goto err_id;
 		}
 		wait_for_completion_timeout(&_ep->conn.route_comp,
-		                msecs_to_jiffies(def_cm_to_ms));
+					    msecs_to_jiffies(def_cm_to_ms));
 		if (_ep->conn.status != RDMA_CM_EVENT_ROUTE_RESOLVED) {
 			LOG_ERR("Failed to resolve route.");
 			ret = -ENODATA;
@@ -3490,14 +3781,14 @@ kfi_ibv_check_hints(const struct kfi_info *hints, const struct kfi_info *info)
 
 static int
 kfi_ibv_check_fabric_attr(const struct kfi_fabric_attr *attr,
-                const struct kfi_info *info)
+			  const struct kfi_info *info)
 {
 	if (attr->name && strcmp(attr->name, info->fabric_attr->name)) {
-		LOG_ERR("Invalid hints - unknown fabric name.");
+		LOG_ERR("Invalid hints: unknown fabric name");
 		return -ENODATA;
 	}
 	if (attr->prov_version > info->fabric_attr->prov_version) {
-		LOG_ERR("Invalid hints - unsupported provider version.");
+		LOG_ERR("Invalid hints: unsupported provider version");
 		return -ENODATA;
 	}
 	return 0;
@@ -3505,10 +3796,10 @@ kfi_ibv_check_fabric_attr(const struct kfi_fabric_attr *attr,
 
 static int
 kfi_ibv_check_domain_attr(const struct kfi_domain_attr *attr,
-                const struct kfi_info *info)
+			  const struct kfi_info *info)
 {
 	if (attr->name && strcmp(attr->name, info->domain_attr->name)) {
-		LOG_ERR("Invalid hints - unknown domain name.");
+		LOG_ERR("Invalid hints: unknown domain name");
 		return -ENODATA;
 	}
 
@@ -3520,7 +3811,7 @@ kfi_ibv_check_domain_attr(const struct kfi_domain_attr *attr,
 	case KFI_THREAD_COMPLETION:
 		break;
 	default:
-		LOG_ERR("Invalid hints - invalid threading mode.");
+		LOG_ERR("Invalid hints: invalid threading mode");
 		return -ENODATA;
 	}
 
@@ -3530,7 +3821,7 @@ kfi_ibv_check_domain_attr(const struct kfi_domain_attr *attr,
 	case KFI_PROGRESS_MANUAL:
 		break;
 	default:
-		LOG_ERR("Invalid hints - invalid control progress mode.");
+		LOG_ERR("Invalid hints: invalid control progress mode");
 		return -ENODATA;
 	}
 
@@ -3540,39 +3831,40 @@ kfi_ibv_check_domain_attr(const struct kfi_domain_attr *attr,
 	case KFI_PROGRESS_MANUAL:
 		break;
 	default:
-		LOG_ERR("Invalid hints - invalid data progress mode.");
+		LOG_ERR("Invalid hints: invalid data progress mode");
 		return -ENODATA;
 	}
 
 	if (attr->mr_key_size > info->domain_attr->mr_key_size) {
-		LOG_ERR("Invalid hints - MR key size too large.");
+		LOG_ERR("Invalid hints: MR key size too large");
 		return -ENODATA;
 	}
 	if (attr->cq_data_size > info->domain_attr->cq_data_size) {
-		LOG_ERR("Invalid hints - CQ data size too large.");
+		LOG_ERR("Invalid hints: CQ data size too large");
 		return -ENODATA;
 	}
 	if (attr->cq_cnt > info->domain_attr->cq_cnt) {
-		LOG_ERR("Invalid hints - cq_cnt exceeds supported range.");
+		LOG_ERR("Invalid hints: cq_cnt exceeded");
 		return -ENODATA;
 	}
 	if (attr->ep_cnt > info->domain_attr->ep_cnt) {
-		LOG_ERR("Invalid hints - ep_cnt exceeds supported range.");
+		LOG_ERR("Invalid hints: ep_cnt exceeded");
 		return -ENODATA;
 	}
 	if (attr->max_ep_tx_ctx > info->domain_attr->max_ep_tx_ctx) {
-		LOG_ERR("Invalid hints - max_ep_tx_ctx exceeds supported range.");
+		LOG_ERR("Invalid hints: max_ep_tx_ctx exceeded");
 		return -ENODATA;
 	}
 	if (attr->max_ep_rx_ctx > info->domain_attr->max_ep_rx_ctx) {
-		LOG_ERR("Invalid hints - max_ep_rx_ctx exceeds supported range.");
+		LOG_ERR("Invalid hints: max_ep_rx_ctx exceeded");
 		return -ENODATA;
 	}
 	return 0;
 }
 
 static int
-kfi_ibv_check_ep_attr(const struct kfi_ep_attr *attr, const struct kfi_info *info)
+kfi_ibv_check_ep_attr(const struct kfi_ep_attr *attr,
+		      const struct kfi_info *info)
 {
 	switch (attr->protocol) {
 	case KFI_PROTO_UNSPEC:
@@ -3581,36 +3873,36 @@ kfi_ibv_check_ep_attr(const struct kfi_ep_attr *attr, const struct kfi_info *inf
 	case KFI_PROTO_IB_UD:
 		break;
 	default:
-		LOG_ERR("Invalid hints - unsupported protocol.");
+		LOG_ERR("Invalid hints: unsupported protocol");
 		return -ENODATA;
 	}
 
 	if (attr->protocol_version > 1) {
-		LOG_ERR("Invalid hints - unsupported protocol version.");
+		LOG_ERR("Invalid hints: unsupported protocol version");
 		return -ENODATA;
 	}
 	if (attr->max_msg_size > info->ep_attr->max_msg_size) {
-		LOG_ERR("Invalid hints - max message size too large.");
+		LOG_ERR("Invalid hints: max message size too large");
 		return -ENODATA;
 	}
 	if (attr->max_order_raw_size > info->ep_attr->max_order_raw_size) {
-		LOG_ERR("Invalid hints - max_order_raw_size exceeds supported range.");
+		LOG_ERR("Invalid hints: max_order_raw_size exceeded");
 		return -ENODATA;
 	}
 	if (attr->max_order_war_size > info->ep_attr->max_order_war_size) {
-		LOG_ERR("Invalid hints - max_order_war_size exceeds supported range.");
+		LOG_ERR("Invalid hints: max_order_war_size exceeded");
 		return -ENODATA;
 	}
 	if (attr->max_order_waw_size > info->ep_attr->max_order_waw_size) {
-		LOG_ERR("Invalid hints - max_order_waw_size exceeds supported range.");
+		LOG_ERR("Invalid hints: max_order_waw_size exceeded");
 		return -ENODATA;
 	}
 	if (attr->tx_ctx_cnt > info->domain_attr->max_ep_tx_ctx) {
-		LOG_ERR("Invalid hints - tx_ctx_cnt exceeds supported range.");
+		LOG_ERR("Invalid hints: tx_ctx_cnt exceeded");
 		return -ENODATA;
 	}
 	if (attr->rx_ctx_cnt > info->domain_attr->max_ep_rx_ctx) {
-		LOG_ERR("Invalid hints - rx_ctx_cnt exceeds supported range.");
+		LOG_ERR("Invalid hints: rx_ctx_cnt exceeded");
 		return -ENODATA;
 	}
 	return 0;
@@ -3618,12 +3910,12 @@ kfi_ibv_check_ep_attr(const struct kfi_ep_attr *attr, const struct kfi_info *inf
 
 static int
 kfi_ibv_check_rx_attr(const struct kfi_rx_attr *attr,
-                const struct kfi_info *hints, const struct kfi_info *info)
+		      const struct kfi_info *hints, const struct kfi_info *info)
 {
 	uint64_t compare_mode, check_mode;
 
 	if (attr->caps & ~(info->rx_attr->caps)) {
-		LOG_ERR("Invalid hints - unsupported rx_attr->caps.");
+		LOG_ERR("Invalid hints: unsupported rx_attr->caps");
 		return -ENODATA;
 	}
 
@@ -3631,27 +3923,27 @@ kfi_ibv_check_rx_attr(const struct kfi_rx_attr *attr,
 	check_mode = (hints->caps & KFI_RMA) ?
 		info->rx_attr->mode : VERBS_MODE;
 	if ((compare_mode & check_mode) != check_mode) {
-		LOG_ERR("Invalid hints - unsupported rx_attr->mode.");
+		LOG_ERR("Invalid hints: unsupported rx_attr->mode");
 		return -ENODATA;
 	}
 	if (attr->op_flags & ~(info->rx_attr->op_flags)) {
-		LOG_ERR("Invalid hints - unsupported rx_attr->op_flags.");
+		LOG_ERR("Invalid hints: unsupported rx_attr->op_flags");
 		return -ENODATA;
 	}
 	if (attr->msg_order & ~(info->rx_attr->msg_order)) {
-		LOG_ERR("Invalid hints - unsupported rx_attr->msg_order.");
+		LOG_ERR("Invalid hints: unsupported rx_attr->msg_order");
 		return -ENODATA;
 	}
 	if (attr->size > info->rx_attr->size) {
-		LOG_ERR("Invalid hints - rx_attr->size exceeds supported range.");
+		LOG_ERR("Invalid hints: rx_attr->size exceeded");
 		return -ENODATA;
 	}
 	if (attr->total_buffered_recv > info->rx_attr->total_buffered_recv) {
-		LOG_ERR("Invalid hints - rx_attr->total_buffered_recv exceeds supported range.");
+		LOG_ERR("Invalid hints: rx_attr->total_buffered_recv exceeded");
 		return -ENODATA;
 	}
 	if (attr->iov_limit > info->rx_attr->iov_limit) {
-		LOG_ERR("Invalid hints - rx_attr->iov_limit exceeds supported range.");
+		LOG_ERR("Invalid hints: rx_attr->iov_limit exceeded");
 		return -ENODATA;
 	}
 	return 0;
@@ -3659,35 +3951,35 @@ kfi_ibv_check_rx_attr(const struct kfi_rx_attr *attr,
 
 static int
 kfi_ibv_check_tx_attr(const struct kfi_tx_attr *attr,
-                const struct kfi_info *hints, const struct kfi_info *info)
+		      const struct kfi_info *hints, const struct kfi_info *info)
 {
 	if (attr->caps & ~(info->tx_attr->caps)) {
-		LOG_ERR("Invalid hints - unsupported tx_attr->caps.");
+		LOG_ERR("Invalid hints: unsupported tx_attr->caps");
 		return -ENODATA;
 	}
-	if ( ((attr->mode ? attr->mode : hints->mode) & info->tx_attr->mode)
-	     != info->tx_attr->mode ) {
-		LOG_ERR("Invalid hints - unsupported tx_attr->mode.");
+	if (((attr->mode ? attr->mode : hints->mode) & info->tx_attr->mode)
+	    != info->tx_attr->mode) {
+		LOG_ERR("Invalid hints: unsupported tx_attr->mode");
 		return -ENODATA;
 	}
 	if (attr->op_flags & ~(info->tx_attr->op_flags)) {
-		LOG_ERR("Invalid hints - unsupported tx_attr->op_flags.");
+		LOG_ERR("Invalid hints: unsupported tx_attr->op_flags");
 		return -ENODATA;
 	}
 	if (attr->msg_order & ~(info->tx_attr->msg_order)) {
-		LOG_ERR("Invalid hints - unsupported tx_attr->msg_order.");
+		LOG_ERR("Invalid hints: unsupported tx_attr->msg_order");
 		return -ENODATA;
 	}
 	if (attr->size > info->tx_attr->size) {
-		LOG_ERR("Invalid hints - tx_attr->size exceeds supported range.");
+		LOG_ERR("Invalid hints: tx_attr->size exceeded");
 		return -ENODATA;
 	}
 	if (attr->iov_limit > info->tx_attr->iov_limit) {
-		LOG_ERR("Invalid hints - tx_attr->iov_limit exceeds supported range.");
+		LOG_ERR("Invalid hints: tx_attr->iov_limit exceeded");
 		return -ENODATA;
 	}
 	if (attr->rma_iov_limit > info->tx_attr->rma_iov_limit) {
-		LOG_ERR("Invalid hints - tx_attr->rma_iov_limit exceeds supported range.");
+		LOG_ERR("Invalid hints: tx_attr->rma_iov_limit exceeded.");
 		return -ENODATA;
 	}
 	return 0;
@@ -3700,11 +3992,11 @@ kfi_ibv_update_info(const struct kfi_info *hints, struct kfi_info *info)
 		if (hints->ep_attr) {
 			if (hints->ep_attr->tx_ctx_cnt) {
 				info->ep_attr->tx_ctx_cnt =
-				        hints->ep_attr->tx_ctx_cnt;
+					hints->ep_attr->tx_ctx_cnt;
 			}
 			if (hints->ep_attr->rx_ctx_cnt) {
 				info->ep_attr->rx_ctx_cnt =
-				        hints->ep_attr->rx_ctx_cnt;
+					hints->ep_attr->rx_ctx_cnt;
 			}
 		}
 		if (hints->tx_attr)
@@ -3713,21 +4005,20 @@ kfi_ibv_update_info(const struct kfi_info *hints, struct kfi_info *info)
 			info->rx_attr->op_flags = hints->rx_attr->op_flags;
 		if (hints->src_addrlen) {
 			info->src_addr =
-			        kmemdup(hints->src_addr, hints->src_addrlen,
-			                        GFP_KERNEL);
+				kmemdup(hints->src_addr, hints->src_addrlen,
+					GFP_KERNEL);
 			info->src_addrlen = hints->src_addrlen;
 		}
 		if (hints->dest_addrlen) {
 			info->dest_addr =
-			        kmemdup(hints->dest_addr, hints->dest_addrlen,
-			                        GFP_KERNEL);
+				kmemdup(hints->dest_addr, hints->dest_addrlen,
+					GFP_KERNEL);
 			info->dest_addrlen = hints->dest_addrlen;
 		}
 	} else {
 		info->tx_attr->op_flags = 0;
 		info->rx_attr->op_flags = 0;
 	}
-	return;
 }
 
 static int
@@ -3740,11 +4031,10 @@ kfi_ibv_copy_addr(void *dst_addr, size_t *dst_addrlen, void *src_addr)
 		return -EINVAL;
 	}
 
-	if (*dst_addrlen < src_addrlen) {
+	if (*dst_addrlen < src_addrlen)
 		memcpy(dst_addr, src_addr, *dst_addrlen);
-	} else {
+	else
 		memcpy(dst_addr, src_addr, src_addrlen);
-	}
 	*dst_addrlen = src_addrlen;
 	return 0;
 }
@@ -3752,9 +4042,8 @@ kfi_ibv_copy_addr(void *dst_addr, size_t *dst_addrlen, void *src_addr)
 static int
 kfi_ibv_sockaddr_len(struct sockaddr *addr)
 {
-	if (!addr) {
+	if (!addr)
 		return 0;
-	}
 
 	switch (addr->sa_family) {
 	case AF_INET:
@@ -3770,20 +4059,25 @@ kfi_ibv_sockaddr_len(struct sockaddr *addr)
 
 static ssize_t
 kfi_ibv_eq_cm_process_event(struct kfi_ibv_eq *eq,
-                struct kfi_ibv_event *cma_event, uint32_t *event,
-                struct kfi_eq_cm_entry *entry, size_t len)
+			    struct kfi_ibv_event *cma_event, uint32_t *event,
+			    struct kfi_eq_cm_entry *entry, size_t len)
 {
 	kfid_t fid = NULL;
 	size_t datalen = 0;
 	struct rdma_conn_param *conn = NULL;
 
-	fid = (struct kfid*)cma_event->id->context;
+	fid = (struct kfid *)cma_event->id->context;
 	switch (cma_event->event.event) {
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
 		*event = KFI_CONNREQ;
 		entry->info = kfi_ibv_eq_cm_getinfo(cma_event);
 		if (!entry->info) {
+#if RHEL_MAJOR == 8 && RHEL_MINOR == 4 || defined SLES15_SP3
+			rdma_reject(cma_event->id, NULL, 0,
+				    IB_CM_REJ_UNSUPPORTED);
+#else
 			rdma_reject(cma_event->id, NULL, 0);
+#endif
 			rdma_destroy_id(cma_event->id);
 			cma_event->id = NULL;
 			return 0;
@@ -3797,7 +4091,9 @@ kfi_ibv_eq_cm_process_event(struct kfi_ibv_eq *eq,
 		*event = KFI_SHUTDOWN;
 		entry->info = NULL;
 		break;
-	/* We are not supposed to receive ADDR_RESOLVED or ROUTE_RESOLVED here */
+	/* We are not supposed to receive ADDR_RESOLVED or ROUTE_RESOLVED
+	 * here
+	 */
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
 	case RDMA_CM_EVENT_ADDR_ERROR:
@@ -3827,9 +4123,9 @@ kfi_ibv_eq_cm_process_event(struct kfi_ibv_eq *eq,
 	entry->fid = fid;
 	conn = &cma_event->event.param.conn;
 	datalen = min(len - sizeof(*entry), (size_t)conn->private_data_len);
-	if (datalen) {
+	if (datalen)
 		memcpy(entry->data, conn->private_data, datalen);
-	}
+
 	return (sizeof(*entry) + datalen);
 }
 
@@ -3875,7 +4171,8 @@ kfi_ibv_ep_unbind(kfid_t fid, struct kfid *bfid, uint64_t flags)
 	int ret = 0;
 
 	if (fid->fclass != KFI_CLASS_EP
-	    || (bfid->fclass != KFI_CLASS_EQ && bfid->fclass != KFI_CLASS_CQ) ) {
+	    || (bfid->fclass != KFI_CLASS_EQ
+		&& bfid->fclass != KFI_CLASS_CQ)) {
 		return -EINVAL;
 	}
 
@@ -3967,9 +4264,8 @@ kstrerror(int errno)
 		[ERANGE]        = "Math result not representable",
 	};
 
-	if (errno < EPERM || errno > ERANGE) {
+	if (errno < EPERM || errno > ERANGE)
 		return "Unknown error";
-	}
 
 	return errno_str[errno];
 }
@@ -3978,28 +4274,28 @@ static const char *
 ib_wc_status_str(enum ib_wc_status status)
 {
 	static const char *const wc_status_str[] = {
-		[IB_WC_SUCCESS]            = "success",
-		[IB_WC_LOC_LEN_ERR]        = "local length error",
-		[IB_WC_LOC_QP_OP_ERR]      = "local QP operation error",
-		[IB_WC_LOC_EEC_OP_ERR]     = "local EE context operation error",
-		[IB_WC_LOC_PROT_ERR]       = "local protection error",
-		[IB_WC_WR_FLUSH_ERR]       = "Work Request Flushed Error",
-		[IB_WC_MW_BIND_ERR]        = "memory management operation error",
-		[IB_WC_BAD_RESP_ERR]       = "bad response error",
-		[IB_WC_LOC_ACCESS_ERR]     = "local access error",
-		[IB_WC_REM_INV_REQ_ERR]    = "remote invalid request error",
-		[IB_WC_REM_ACCESS_ERR]     = "remote access error",
-		[IB_WC_REM_OP_ERR]         = "remote operation error",
-		[IB_WC_RETRY_EXC_ERR]      = "transport retry counter exceeded",
-		[IB_WC_RNR_RETRY_EXC_ERR]  = "RNR retry counter exceeded",
-		[IB_WC_LOC_RDD_VIOL_ERR]   = "local RDD violation error",
+		[IB_WC_SUCCESS] = "success",
+		[IB_WC_LOC_LEN_ERR] = "local length error",
+		[IB_WC_LOC_QP_OP_ERR] = "local QP operation error",
+		[IB_WC_LOC_EEC_OP_ERR] = "local EE context operation error",
+		[IB_WC_LOC_PROT_ERR] = "local protection error",
+		[IB_WC_WR_FLUSH_ERR] = "Work Request Flushed Error",
+		[IB_WC_MW_BIND_ERR] = "memory management operation error",
+		[IB_WC_BAD_RESP_ERR] = "bad response error",
+		[IB_WC_LOC_ACCESS_ERR] = "local access error",
+		[IB_WC_REM_INV_REQ_ERR] = "remote invalid request error",
+		[IB_WC_REM_ACCESS_ERR] = "remote access error",
+		[IB_WC_REM_OP_ERR]  = "remote operation error",
+		[IB_WC_RETRY_EXC_ERR] = "transport retry counter exceeded",
+		[IB_WC_RNR_RETRY_EXC_ERR] = "RNR retry counter exceeded",
+		[IB_WC_LOC_RDD_VIOL_ERR] = "local RDD violation error",
 		[IB_WC_REM_INV_RD_REQ_ERR] = "remote invalid RD request",
-		[IB_WC_REM_ABORT_ERR]      = "aborted error",
-		[IB_WC_INV_EECN_ERR]       = "invalid EE context number",
-		[IB_WC_INV_EEC_STATE_ERR]  = "invalid EE context state",
-		[IB_WC_FATAL_ERR]          = "fatal error",
-		[IB_WC_RESP_TIMEOUT_ERR]   = "response timeout error",
-		[IB_WC_GENERAL_ERR]        = "general error"
+		[IB_WC_REM_ABORT_ERR] = "aborted error",
+		[IB_WC_INV_EECN_ERR] = "invalid EE context number",
+		[IB_WC_INV_EEC_STATE_ERR] = "invalid EE context state",
+		[IB_WC_FATAL_ERR] = "fatal error",
+		[IB_WC_RESP_TIMEOUT_ERR] = "response timeout error",
+		[IB_WC_GENERAL_ERR] = "general error"
 	};
 
 	if (status < IB_WC_SUCCESS || status > IB_WC_GENERAL_ERR)
@@ -4050,16 +4346,16 @@ kfi_ibv_fill_sge(void *addr, size_t len, void *desc, struct ib_sge *sge)
 	struct kfi_ibv_mem_desc *md = NULL;
 	size_t offset = 0;
 
-	md = (struct kfi_ibv_mem_desc*)desc;
+	md = (struct kfi_ibv_mem_desc *)desc;
 
-	if (addr < md->vaddr) {
+	if (addr < md->vaddr)
 		return -EINVAL;
-	}
+
 	offset = (addr - md->vaddr);
-	if (offset + len > md->dma_len) {
+	if (offset + len > md->dma_len)
 		return -EINVAL;
-	}
-	sge->addr = md->dma_addr + offset;
+
+	sge->addr = md->mr->iova + offset;
 	sge->length = (uint32_t)len;
 	sge->lkey = md->mr->lkey;
 	return 0;

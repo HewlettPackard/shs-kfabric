@@ -3,14 +3,15 @@ MOD=kfit-info
 
 KFI_TOP ?=$(shell pwd)/../..
 KFI=$(KFI_TOP)/kfi
+KDIR ?= /lib/modules/$(shell uname -r)/build
 
 all:
 	echo $(PWD)
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) \
+	make -C $(KDIR) M=$(PWD) \
 		KBUILD_EXTRA_SYMBOLS+=$(KFI)/Module.symvers modules
  
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	make -C $(KDIR) M=$(PWD) clean
 
 main.o: main.c Makefile
 

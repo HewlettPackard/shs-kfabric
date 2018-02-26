@@ -35,46 +35,6 @@
 
 #include <kfi_endpoint.h>
 
-enum kfi_datatype {
-	KFI_INT8,
-	KFI_UINT8,
-	KFI_INT16,
-	KFI_UINT16,
-	KFI_INT32,
-	KFI_UINT32,
-	KFI_INT64,
-	KFI_UINT64,
-	KFI_FLOAT,
-	KFI_DOUBLE,
-	KFI_FLOAT_COMPLEX,
-	KFI_DOUBLE_COMPLEX,
-	KFI_LONG_DOUBLE,
-	KFI_LONG_DOUBLE_COMPLEX,
-	KFI_DATATYPE_LAST
-};
-
-enum kfi_op {
-	KFI_MIN,
-	KFI_MAX,
-	KFI_SUM,
-	KFI_PROD,
-	KFI_LOR,
-	KFI_LAND,
-	KFI_BOR,
-	KFI_BAND,
-	KFI_LXOR,
-	KFI_BXOR,
-	KFI_ATOMIC_READ,
-	KFI_ATOMIC_WRITE,
-	KFI_CSWAP,
-	KFI_CSWAP_NE,
-	KFI_CSWAP_LE,
-	KFI_CSWAP_LT,
-	KFI_CSWAP_GE,
-	KFI_CSWAP_GT,
-	KFI_MSWAP,
-	KFI_ATOMIC_OP_LAST
-};
 
 struct kfi_ioc {
 	void			*addr;
@@ -85,6 +45,11 @@ struct kfi_rma_ioc {
 	uint64_t                addr;
 	size_t                  count;
 	uint64_t                key;
+};
+
+struct kfi_atomic_attr {
+	size_t			count;
+	size_t			size;
 };
 
 struct kfi_msg_atomic {
@@ -98,6 +63,18 @@ struct kfi_msg_atomic {
 	enum kfi_op			op;
 	void				*context;
 	uint64_t			data;
+};
+
+struct kfi_msg_fetch {
+	struct kfi_ioc			*msg_iov;
+	void				**desc;
+	size_t				iov_count;
+};
+
+struct kfi_msg_compare {
+	const struct kfi_ioc		*msg_iov;
+	void				**desc;
+	size_t				iov_count;
 };
 
 struct kfi_ops_atomic {
@@ -166,6 +143,8 @@ struct kfi_ops_atomic {
 				  enum kfi_datatype datatype,
 				  enum kfi_op op, size_t *count);
 };
+
+#ifndef KFABRIC_DIRECT
 
 static inline ssize_t
 kfi_atomic(struct kfid_ep *ep, const void *buf, size_t count, void *desc,
@@ -288,9 +267,22 @@ kfi_fetch_atomicvalid(struct kfid_ep *ep, enum kfi_datatype datatype,
 
 static inline int
 kfi_compare_atomicvalid(struct kfid_ep *ep, enum kfi_datatype datatype,
-		        enum kfi_op op, size_t *count)
+			enum kfi_op op, size_t *count)
 {
 	return ep->atomic->compwritevalid(ep, datatype, op, count);
 }
+
+static inline int
+kfi_query_atomic(struct kfid_domain *domain, enum kfi_datatype datatype,
+		 enum kfi_op op, struct kfi_atomic_attr *attr, uint64_t flags)
+{
+	return KFI_CHECK_OP(domain->ops, struct kfi_ops_domain, query_atomic) ?
+		domain->ops->query_atomic(domain, datatype, op, attr, flags) :
+		-ENOSYS;
+}
+
+#else /* KFABRIC_DIRECT */
+#include <kfi_direct_atomic.h>
+#endif
 
 #endif /* _KFI_ATOMIC_H_ */

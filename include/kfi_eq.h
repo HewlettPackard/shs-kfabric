@@ -45,8 +45,7 @@ enum kfi_wait_obj {
 	KFI_WAIT_NONE,
 	KFI_WAIT_UNSPEC,
 	KFI_WAIT_SET,
-	KFI_WAIT_FD,
-	KFI_WAIT_MUTEX_COND,	/* pthread mutex & cond */
+	KFI_WAIT_QUEUE		/* Linux wait queue */
 };
 
 struct kfi_wait_attr {
@@ -54,14 +53,14 @@ struct kfi_wait_attr {
 	uint64_t		flags;
 };
 
+struct kfid_wait {
+	struct kfid		kfid;
+	struct kfi_ops_wait	*ops;
+};
+
 struct kfi_ops_wait {
 	size_t	size;
 	int	(*wait)(struct kfid_wait *waitset, int timeout);
-};
-
-struct kfid_wait {
-	struct kfid		fid;
-	struct kfi_ops_wait	*ops;
 };
 
 /*
@@ -98,7 +97,7 @@ struct kfi_eq_attr {
 	uint64_t		flags;
 	enum kfi_wait_obj	wait_obj;
 	int			signaling_vector;
-	struct kfid_wai		*wait_set;
+	struct kfid_wait	*wait_set;
 };
 
 /* Standard EQ events */
@@ -109,6 +108,7 @@ enum {
 	KFI_SHUTDOWN,
 	KFI_MR_COMPLETE,
 	KFI_AV_COMPLETE,
+	KFI_JOIN_COMPLETE
 };
 
 struct kfi_eq_entry {
@@ -125,6 +125,7 @@ struct kfi_eq_err_entry {
 	int			prov_errno;
 	/* err_data is available until the next time the CQ is read */
 	void			*err_data;
+	size_t			err_data_size;
 };
 
 struct kfi_eq_cm_entry {
@@ -152,6 +153,7 @@ struct kfi_ops_eq {
 struct kfid_eq {
 	struct kfid		fid;
 	struct kfi_ops_eq	*ops;
+	kfi_event_handler	event_handler;
 };
 
 
@@ -208,6 +210,7 @@ struct kfi_cq_err_entry {
 	int			prov_errno;
 	/* err_data is available until the next time the CQ is read */
 	void			*err_data;
+	size_t			err_data_size;
 };
 
 enum kfi_cq_wait_cond {
@@ -232,9 +235,6 @@ struct kfi_ops_cq {
 			kfi_addr_t *src_addr);
 	ssize_t	(*readerr)(struct kfid_cq *cq, struct kfi_cq_err_entry *buf,
 			uint64_t flags);
-	ssize_t	(*write)(struct kfid_cq *cq, const void *buf, size_t len);
-	ssize_t	(*writeerr)(struct kfid_cq *cq, struct kfi_cq_err_entry *buf,
-			size_t len, uint64_t flags);
 	ssize_t	(*sread)(struct kfid_cq *cq, void *buf, size_t count,
 			const void *cond, int timeout);
 	ssize_t	(*sreadfrom)(struct kfid_cq *cq, void *buf, size_t count,
@@ -247,6 +247,7 @@ struct kfi_ops_cq {
 struct kfid_cq {
 	struct kfid		fid;
 	struct kfi_ops_cq	*ops;
+	kfi_comp_handler        comp_handler;
 };
 
 
@@ -272,7 +273,10 @@ struct kfi_ops_cntr {
 	uint64_t (*readerr)(struct kfid_cntr *cntr);
 	int	(*add)(struct kfid_cntr *cntr, uint64_t value);
 	int	(*set)(struct kfid_cntr *cntr, uint64_t value);
-	int	(*wait)(struct kfid_cntr *cntr, uint64_t threshold, int timeout);
+	int	(*wait)(struct kfid_cntr *cntr, uint64_t threshold,
+			int timeout);
+	int	(*adderr)(struct kfid_cntr *cntr, uint64_t value);
+	int	(*seterr)(struct kfid_cntr *cntr, uint64_t value);
 };
 
 struct kfid_cntr {
@@ -309,14 +313,14 @@ kfi_poll_del(struct kfid_poll *pollset, struct kfid *event_kfid, uint64_t flags)
 
 static inline int
 kfi_eq_open(struct kfid_fabric *fabric, struct kfi_eq_attr *attr,
-	   struct kfid_eq **eq, void *context)
+	    struct kfid_eq **eq, kfi_event_handler event_handler, void *context)
 {
-	return fabric->ops->eq_open(fabric, attr, eq, context);
+	return fabric->ops->eq_open(fabric, attr, eq, event_handler, context);
 }
 
 static inline ssize_t
 kfi_eq_read(struct kfid_eq *eq, uint32_t *event, void *buf,
-	   size_t len, uint64_t flags)
+	    size_t len, uint64_t flags)
 {
 	return eq->ops->read(eq, event, buf, len, flags);
 }
@@ -329,21 +333,21 @@ kfi_eq_readerr(struct kfid_eq *eq, struct kfi_eq_err_entry *buf, uint64_t flags)
 
 static inline ssize_t
 kfi_eq_write(struct kfid_eq *eq, uint32_t event, const void *buf,
-	    size_t len, uint64_t flags)
+	     size_t len, uint64_t flags)
 {
 	return eq->ops->write(eq, event, buf, len, flags);
 }
 
 static inline ssize_t
 kfi_eq_sread(struct kfid_eq *eq, uint32_t *event, void *buf, size_t len,
-	    int timeout, uint64_t flags)
+	     int timeout, uint64_t flags)
 {
 	return eq->ops->sread(eq, event, buf, len, timeout, flags);
 }
 
 static inline const char *
 kfi_eq_strerror(struct kfid_eq *eq, int prov_errno, const void *err_data,
-	       char *buf, size_t len)
+		char *buf, size_t len)
 {
 	return eq->ops->strerror(eq, prov_errno, err_data, buf, len);
 }
@@ -355,7 +359,8 @@ static inline ssize_t kfi_cq_read(struct kfid_cq *cq, void *buf, size_t count)
 }
 
 static inline ssize_t
-kfi_cq_readfrom(struct kfid_cq *cq, void *buf, size_t count, kfi_addr_t *src_addr)
+kfi_cq_readfrom(struct kfid_cq *cq, void *buf, size_t count,
+		kfi_addr_t *src_addr)
 {
 	return cq->ops->readfrom(cq, buf, count, src_addr);
 }
@@ -366,19 +371,6 @@ kfi_cq_readerr(struct kfid_cq *cq, struct kfi_cq_err_entry *buf, uint64_t flags)
 	return cq->ops->readerr(cq, buf, flags);
 }
 
-static inline ssize_t kfi_cq_write(struct kfid_cq *cq, const void *buf,
-				  size_t len)
-{
-	return cq->ops->write(cq, buf, len);
-}
-
-static inline ssize_t kfi_cq_writeerr(struct kfid_cq *cq,
-				     struct kfi_cq_err_entry *buf, size_t len,
-				     uint64_t flags)
-{
-	return cq->ops->writeerr(cq, buf, len, flags);
-}
-
 static inline ssize_t
 kfi_cq_sread(struct kfid_cq *cq, void *buf, size_t count, const void *cond,
 	    int timeout)
@@ -387,15 +379,20 @@ kfi_cq_sread(struct kfid_cq *cq, void *buf, size_t count, const void *cond,
 }
 
 static inline ssize_t
-kfi_cq_sreadfrom(struct kfid_cq *cq, void *buf, size_t count, kfi_addr_t *src_addr,
-		const void *cond, int timeout)
+kfi_cq_sreadfrom(struct kfid_cq *cq, void *buf, size_t count,
+		 kfi_addr_t *src_addr, const void *cond, int timeout)
 {
 	return cq->ops->sreadfrom(cq, buf, count, src_addr, cond, timeout);
 }
 
+static inline int kfi_cq_signal(struct kfid_cq *cq)
+{
+	return cq->ops->signal(cq);
+}
+
 static inline const char *
 kfi_cq_strerror(struct kfid_cq *cq, int prov_errno, const void *err_data,
-	       char *buf, size_t len)
+		char *buf, size_t len)
 {
 	return cq->ops->strerror(cq, prov_errno, err_data, buf, len);
 }
@@ -416,9 +413,21 @@ static inline int kfi_cntr_add(struct kfid_cntr *cntr, uint64_t value)
 	return cntr->ops->add(cntr, value);
 }
 
+static inline int kfi_cntr_adderr(struct kfid_cntr *cntr, uint64_t value)
+{
+	return KFI_CHECK_OP(cntr->ops, struct kfi_ops_cntr, adderr) ?
+		cntr->ops->adderr(cntr, value) : -ENOSYS;
+}
+
 static inline int kfi_cntr_set(struct kfid_cntr *cntr, uint64_t value)
 {
 	return cntr->ops->set(cntr, value);
+}
+
+static inline int kfi_cntr_seterr(struct kfid_cntr *cntr, uint64_t value)
+{
+	return KFI_CHECK_OP(cntr->ops, struct kfi_ops_cntr, seterr) ?
+		cntr->ops->seterr(cntr, value) : -ENOSYS;
 }
 
 static inline int

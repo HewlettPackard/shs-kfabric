@@ -41,6 +41,8 @@
 #include <kfi_prov.h>
 #include <kfi_endpoint.h>
 #include <kfi_log.h>
+#include <kfi_errno.h>
+#include <kfi_trigger.h>
 
 MODULE_AUTHOR("Frank Yang, Chen Zhao");
 MODULE_DESCRIPTION("Open Fabric Interface Framework");
@@ -88,55 +90,56 @@ kfi_exit(void)
 	}
 	mutex_unlock(&prov_mutex);
 	LOG_INFO("Kernel Open Fabric Interface framework unloaded.");
-	return;
 }
 
 int
-kfi_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info)
+kfi_getinfo(uint32_t version, const char *node, const char *service,
+	    uint64_t flags, struct kfi_info *hints, struct kfi_info **info)
 {
 	struct list_head *lh = NULL;
 	struct kfi_prov *prov = NULL;
 	struct kfi_info *tail = NULL, *cur = NULL;
 	struct kfi_provider *provider = NULL;
 	struct kfi_fabric_attr *attr = NULL;
-	char * hints_name = NULL;
+	char *hints_name = NULL;
 	int ret = -ENODATA;
 	*info = NULL;
 
-	if (hints && hints->fabric_attr && hints->fabric_attr->prov_name) {
+	if (hints && hints->fabric_attr && hints->fabric_attr->prov_name)
 		hints_name = hints->fabric_attr->prov_name;
-	}
+
 	mutex_lock(&prov_mutex);
 	list_for_each(lh, &prov_list) {
 		prov = list_entry(lh, typeof(*prov), list);
 		provider = prov->provider;
 
-		if (!provider->kgetinfo) {
+		if (!provider->kgetinfo)
 			continue;
-		}
-		if (hints_name && strcmp(provider->name, hints_name)) {
-			continue;
-		}
 
-		ret = provider->kgetinfo(version, hints, &cur);
+		if (hints_name && strcmp(provider->name, hints_name))
+			continue;
+
+		ret = provider->kgetinfo(version, node, service, flags, hints,
+					 &cur);
 		if (ret) {
 			if (ret != -ENODATA) {
 				LOG_WARN("kfi_getinfo: provider %s returned %d",
-				         provider->name, ret);
-				kfi_deallocinfo(cur);
+					 provider->name, ret);
+				kfi_freeinfo(cur);
 			}
 			continue;
 		}
 
-		if (!*info) {
+		if (!*info)
 			*info = cur;
-		} else {
+		else
 			tail->next = cur;
-		}
+
 		for (tail = cur; tail; tail = tail->next) {
 			attr = tail->fabric_attr;
 			if (attr && !attr->prov_name) {
-				attr->prov_name = kstrdup(provider->name, GFP_KERNEL);
+				attr->prov_name = kstrdup(provider->name,
+							  GFP_KERNEL);
 				attr->prov_version = provider->version;
 			}
 		}
@@ -147,24 +150,15 @@ kfi_getinfo(uint32_t version, struct kfi_info *hints, struct kfi_info **info)
 }
 EXPORT_SYMBOL(kfi_getinfo);
 
-void
-kfi_freeinfo(struct kfi_info *info)
-{
-	kfi_deallocinfo(info);
-	return;
-}
-EXPORT_SYMBOL(kfi_freeinfo);
-
 int
 kfi_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
-                void *context)
+	   void *context)
 {
 	struct kfi_prov *prov = NULL;
 	int ret = 0;
 
-	if (!attr || !attr->prov_name || !attr->name) {
+	if (!attr || !attr->prov_name || !attr->name)
 		return -EINVAL;
-	}
 
 	mutex_lock(&prov_mutex);
 	prov = kfi_getprov(attr->prov_name);
@@ -176,9 +170,9 @@ kfi_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
 	ret = prov->provider->kfabric(attr, fabric, context);
 
 cleanup:
-	if (prov) {
+	if (prov)
 		kfi_deref_provider(prov->provider);
-	}
+
 	mutex_unlock(&prov_mutex);
 	return ret;
 }
@@ -191,22 +185,18 @@ kfi_provider_register(struct kfi_provider *provider)
 	struct kfi_provider *ex_provider = NULL;
 	int ret = 0;
 
-	if (!provider || !provider->name) {
+	if (!provider || !provider->name)
 		return -EINVAL;
-	}
 
 	init_completion(&provider->comp);
 	atomic_set(&provider->ref_cnt, 1);
 
 	if (KFI_MAJOR(provider->kfi_version) != KFI_MAJOR_VERSION ||
 	    KFI_MINOR(provider->kfi_version) > KFI_MINOR_VERSION) {
-		LOG_ERR("Provider %s ignored. Provider requries KFI version %d.%d, \
-		       incompatible with current KFI version %d.%d.",
-		       provider->name,
-		       KFI_MAJOR(provider->kfi_version),
-		       KFI_MINOR(provider->kfi_version),
-		       KFI_MAJOR_VERSION,
-		       KFI_MINOR_VERSION);
+		LOG_ERR("Provider %s ignored. Provider requires KFI version %d.%d, incompatible with current KFI version %d.%d.",
+			provider->name, KFI_MAJOR(provider->kfi_version),
+			KFI_MINOR(provider->kfi_version), KFI_MAJOR_VERSION,
+			KFI_MINOR_VERSION);
 		ret = -ENOSYS;
 		goto err;
 	}
@@ -221,13 +211,12 @@ kfi_provider_register(struct kfi_provider *provider)
 			 * This provider is older than an already-loaded
 			 * provider of the same name, then discard this one.
 			 */
-			LOG_WARN("A newer %s %d.%d provider is already loaded; \
-				ignoring the older %d.%d version.", \
-				provider->name,
-				KFI_MAJOR(ex_provider->version),
-				KFI_MINOR(ex_provider->version),
-				KFI_MAJOR(provider->version),
-				KFI_MINOR(provider->version));
+			LOG_WARN("A newer %s %d.%d provider is already loaded; ignoring the older %d.%d version.",
+				 provider->name,
+				 KFI_MAJOR(ex_provider->version),
+				 KFI_MINOR(ex_provider->version),
+				 KFI_MAJOR(provider->version),
+				 KFI_MINOR(provider->version));
 			ret = -EEXIST;
 			kfi_deref_provider(ex_provider);
 			mutex_unlock(&prov_mutex);
@@ -238,13 +227,12 @@ kfi_provider_register(struct kfi_provider *provider)
 			 * provider of the same name, so replace the
 			 * already-loaded one.
 			 */
-			LOG_INFO("An older %s %d.%d provider is already loaded; \
-				replacing with a newer %d.%d version.", \
-				provider->name,
-				KFI_MAJOR(ex_provider->version),
-				KFI_MINOR(ex_provider->version),
-				KFI_MAJOR(provider->version),
-				KFI_MINOR(provider->version));
+			LOG_INFO("An older %s %d.%d provider is already loaded; replacing with a newer %d.%d version.",
+				 provider->name,
+				 KFI_MAJOR(ex_provider->version),
+				 KFI_MINOR(ex_provider->version),
+				 KFI_MAJOR(provider->version),
+				 KFI_MINOR(provider->version));
 			kfi_ref_provider(provider);
 			prov->provider = provider;
 			kfi_deref_provider(ex_provider);
@@ -264,10 +252,8 @@ kfi_provider_register(struct kfi_provider *provider)
 	kfi_ref_provider(provider);
 	prov->provider = provider;
 	list_add_tail(&prov->list, &prov_list);
-	LOG_INFO("A %s %d.%d provider is successuflly loaded.", \
-		provider->name,
-		KFI_MAJOR(provider->version),
-		KFI_MINOR(provider->version));
+	LOG_INFO("A %s %d.%d provider is successfully loaded.", provider->name,
+		 KFI_MAJOR(provider->version), KFI_MINOR(provider->version));
 	mutex_unlock(&prov_mutex);
 	return ret;
 
@@ -286,9 +272,8 @@ kfi_provider_deregister(struct kfi_provider *provider)
 	bool found = false;
 	int ret = 0;
 
-	if (!provider || !provider->name) {
+	if (!provider || !provider->name)
 		return -EINVAL;
-	}
 
 	mutex_lock(&prov_mutex);
 	list_for_each(lh, &prov_list) {
@@ -298,23 +283,21 @@ kfi_provider_deregister(struct kfi_provider *provider)
 			break;
 		}
 	}
-	if (found) {
+	if (found)
 		list_del(&prov->list);
-	}
+
 	mutex_unlock(&prov_mutex);
 
 	if (found) {
-		LOG_INFO("A %s %d.%d provider is successuflly unloaded.",
-			provider->name,
-			KFI_MAJOR(provider->version),
-			KFI_MINOR(provider->version));
+		LOG_INFO("A %s %d.%d provider is successfully unloaded.",
+			 provider->name, KFI_MAJOR(provider->version),
+			 KFI_MINOR(provider->version));
 		kfi_deref_provider(provider);
 		kfree(prov);
 	} else {
 		LOG_INFO("Unable to find the %s %d.%d provider.",
-			provider->name,
-			KFI_MAJOR(provider->version),
-			KFI_MINOR(provider->version));
+			 provider->name, KFI_MAJOR(provider->version),
+			 KFI_MINOR(provider->version));
 		ret = -ENODATA;
 	}
 
@@ -328,29 +311,29 @@ EXPORT_SYMBOL(kfi_provider_deregister);
 struct kfi_info *
 kfi_allocinfo(void)
 {
-        struct kfi_info *info = NULL;
+	struct kfi_info *info = NULL;
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
-        if (!info) {
+	if (!info) {
 		LOG_ERR("Failed to allocate fabric info.");
-                return NULL;
+		return NULL;
 	}
 
-        info->tx_attr = kzalloc(sizeof(*info->tx_attr), GFP_KERNEL);
-        info->rx_attr = kzalloc(sizeof(*info->rx_attr), GFP_KERNEL);
-        info->ep_attr = kzalloc(sizeof(*info->ep_attr), GFP_KERNEL);
-        info->domain_attr = kzalloc(sizeof(*info->domain_attr), GFP_KERNEL);
-        info->fabric_attr = kzalloc(sizeof(*info->fabric_attr), GFP_KERNEL);
-        if (!info->tx_attr|| !info->rx_attr || !info->ep_attr ||
-            !info->domain_attr || !info->fabric_attr) {
+	info->tx_attr = kzalloc(sizeof(*info->tx_attr), GFP_KERNEL);
+	info->rx_attr = kzalloc(sizeof(*info->rx_attr), GFP_KERNEL);
+	info->ep_attr = kzalloc(sizeof(*info->ep_attr), GFP_KERNEL);
+	info->domain_attr = kzalloc(sizeof(*info->domain_attr), GFP_KERNEL);
+	info->fabric_attr = kzalloc(sizeof(*info->fabric_attr), GFP_KERNEL);
+	if (!info->tx_attr || !info->rx_attr || !info->ep_attr
+	    || !info->domain_attr || !info->fabric_attr) {
 		LOG_ERR("Failed to allocate fabric info attributes.");
-                goto err;
+		goto err;
 	}
 
-        return info;
+	return info;
 err:
-        kfi_deallocinfo(info);
-        return NULL;
+	kfi_freeinfo(info);
+	return NULL;
 }
 EXPORT_SYMBOL(kfi_allocinfo);
 
@@ -359,14 +342,12 @@ kfi_dupinfo(const struct kfi_info *info)
 {
 	struct kfi_info *dup = NULL;
 
-	if (!info) {
+	if (!info)
 		return kfi_allocinfo();
-	}
 
 	dup = kmemdup(info, sizeof(*info), GFP_KERNEL);
-	if (!dup) {
+	if (!dup)
 		goto err;
-	}
 
 	dup->next = NULL;
 	dup->src_addr = NULL;
@@ -378,73 +359,91 @@ kfi_dupinfo(const struct kfi_info *info)
 	dup->fabric_attr = NULL;
 
 	if (info->src_addr) {
-		dup->src_addr = kmemdup(info->src_addr, dup->src_addrlen, GFP_KERNEL);
-		if (!dup->src_addr) {
+		dup->src_addr = kmemdup(info->src_addr, dup->src_addrlen,
+					GFP_KERNEL);
+		if (!dup->src_addr)
 			goto err;
-		}
 	}
 	if (info->dest_addr) {
-		dup->dest_addr = kmemdup(info->dest_addr, dup->dest_addrlen, GFP_KERNEL);
-		if (!dup->dest_addr) {
+		dup->dest_addr = kmemdup(info->dest_addr, dup->dest_addrlen,
+					 GFP_KERNEL);
+		if (!dup->dest_addr)
 			goto err;
-		}
 	}
 	if (info->tx_attr) {
-		dup->tx_attr = kmemdup(info->tx_attr, sizeof(*info->tx_attr), GFP_KERNEL);
-		if (!dup->tx_attr) {
+		dup->tx_attr = kmemdup(info->tx_attr, sizeof(*info->tx_attr),
+				       GFP_KERNEL);
+		if (!dup->tx_attr)
 			goto err;
-		}
 	}
 	if (info->rx_attr) {
-		dup->rx_attr = kmemdup(info->rx_attr, sizeof(*info->rx_attr), GFP_KERNEL);
-		if (!dup->rx_attr) {
+		dup->rx_attr = kmemdup(info->rx_attr, sizeof(*info->rx_attr),
+				       GFP_KERNEL);
+		if (!dup->rx_attr)
 			goto err;
-		}
 	}
 	if (info->ep_attr) {
-		dup->ep_attr = kmemdup(info->ep_attr, sizeof(*info->ep_attr), GFP_KERNEL);
-		if (!dup->ep_attr) {
+		dup->ep_attr = kmemdup(info->ep_attr, sizeof(*info->ep_attr),
+				       GFP_KERNEL);
+		if (!dup->ep_attr)
 			goto err;
+
+		if (info->ep_attr->auth_key) {
+			dup->ep_attr->auth_key =
+				kmemdup(info->ep_attr->auth_key,
+					info->ep_attr->auth_key_size,
+					GFP_KERNEL);
+			if (!dup->ep_attr->auth_key)
+				goto err;
 		}
 	}
 	if (info->domain_attr) {
 		dup->domain_attr = kmemdup(info->domain_attr,
-		                           sizeof(*info->domain_attr),
-		                           GFP_KERNEL);
-		if (!dup->domain_attr) {
+					   sizeof(*info->domain_attr),
+					   GFP_KERNEL);
+		if (!dup->domain_attr)
 			goto err;
-		}
 		dup->domain_attr->name = NULL;
+		dup->domain_attr->auth_key = NULL;
 		if (info->domain_attr->name) {
-			dup->domain_attr->name = kstrdup(info->domain_attr->name,
-			                                 GFP_KERNEL);
-			if (!dup->domain_attr->name) {
+			dup->domain_attr->name =
+				kstrdup(info->domain_attr->name,
+					GFP_KERNEL);
+			if (!dup->domain_attr->name)
 				goto err;
-			}
+		}
+
+		if (info->domain_attr->auth_key) {
+			dup->domain_attr->auth_key =
+				kmemdup(info->domain_attr->auth_key,
+					info->domain_attr->auth_key_size,
+					GFP_KERNEL);
+			if (!dup->domain_attr->auth_key)
+				goto err;
 		}
 	}
 	if (info->fabric_attr) {
 		dup->fabric_attr = kmemdup(info->fabric_attr,
-		                           sizeof(*info->fabric_attr),
-		                           GFP_KERNEL);
-		if (!dup->fabric_attr) {
+					   sizeof(*info->fabric_attr),
+					   GFP_KERNEL);
+		if (!dup->fabric_attr)
 			goto err;
-		}
+
 		dup->fabric_attr->name = NULL;
 		dup->fabric_attr->prov_name = NULL;
 		if (info->fabric_attr->name) {
-			dup->fabric_attr->name = kstrdup(info->fabric_attr->name,
-			                                 GFP_KERNEL);
-			if (!dup->fabric_attr->name) {
+			dup->fabric_attr->name =
+				kstrdup(info->fabric_attr->name,
+					GFP_KERNEL);
+			if (!dup->fabric_attr->name)
 				goto err;
-			}
 		}
 		if (info->fabric_attr->prov_name) {
-			dup->fabric_attr->prov_name = kstrdup(info->fabric_attr->prov_name,
-			                                      GFP_KERNEL);
-			if (!dup->fabric_attr->prov_name) {
+			dup->fabric_attr->prov_name =
+				kstrdup(info->fabric_attr->prov_name,
+					GFP_KERNEL);
+			if (!dup->fabric_attr->prov_name)
 				goto err;
-			}
 		}
 	}
 
@@ -452,47 +451,35 @@ kfi_dupinfo(const struct kfi_info *info)
 
 err:
 	LOG_ERR("Failed to allocate duplicate fabric info.");
-	kfi_deallocinfo(dup);
+	kfi_freeinfo(dup);
 	return NULL;
 };
 EXPORT_SYMBOL(kfi_dupinfo);
 
 void
-kfi_deallocinfo(const struct kfi_info *info)
+kfi_freeinfo(struct kfi_info *info)
 {
 	struct kfi_info *next = NULL;
 
 	for (; info; info = next) {
 		next = info->next;
 		if (info) {
-			if (info->src_addr) {
-				kfree(info->src_addr);
-			}
-			if (info->dest_addr) {
-				kfree(info->dest_addr);
-			}
-			if (info->tx_attr) {
-				kfree(info->tx_attr);
-			}
-			if (info->rx_attr) {
-				kfree(info->rx_attr);
-			}
+			kfree(info->src_addr);
+			kfree(info->dest_addr);
+			kfree(info->tx_attr);
+			kfree(info->rx_attr);
 			if (info->ep_attr) {
+				kfree(info->ep_attr->auth_key);
 				kfree(info->ep_attr);
 			}
 			if (info->domain_attr) {
-				if (info->domain_attr->name) {
-					kfree(info->domain_attr->name);
-				}
+				kfree(info->domain_attr->auth_key);
+				kfree(info->domain_attr->name);
 				kfree(info->domain_attr);
 			}
 			if (info->fabric_attr) {
-				if (info->fabric_attr->name) {
-					kfree(info->fabric_attr->name);
-				}
-				if (info->fabric_attr->prov_name) {
-					kfree(info->fabric_attr->prov_name);
-				}
+				kfree(info->fabric_attr->name);
+				kfree(info->fabric_attr->prov_name);
 				kfree(info->fabric_attr);
 			}
 			kfree(info);
@@ -500,14 +487,13 @@ kfi_deallocinfo(const struct kfi_info *info)
 	}
 	return;
 };
-EXPORT_SYMBOL(kfi_deallocinfo);
+EXPORT_SYMBOL(kfi_freeinfo);
 
 static void
 cleanup_provider(struct kfi_provider *provider)
 {
-	if (provider && provider->cleanup) {
+	if (provider && provider->cleanup)
 		provider->cleanup();
-	}
 }
 
 static struct kfi_prov *
@@ -518,19 +504,49 @@ kfi_getprov(const char *prov_name)
 
 	list_for_each(lh, &prov_list) {
 		prov = list_entry(lh, typeof(*prov), list);
-		if (!strcmp(prov_name, prov->provider->name)) {
+		if (!strcmp(prov_name, prov->provider->name))
 			break;
-		}
 	}
 	return prov;
 }
 
+uint32_t kfi_version(void)
+{
+	return KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION);
+}
+
+static const char *const errstr[] = {
+	[KFI_EOTHER - KFI_ERRNO_OFFSET] = "Unspecified error",
+	[KFI_ETOOSMALL - KFI_ERRNO_OFFSET] = "Provided buffer is too small",
+	[KFI_EOPBADSTATE - KFI_ERRNO_OFFSET] =
+		"Operation not permitted in current state",
+	[KFI_EAVAIL - KFI_ERRNO_OFFSET]  = "Error available",
+	[KFI_EBADFLAGS - KFI_ERRNO_OFFSET] = "Flags not supported",
+	[KFI_ENOEQ - KFI_ERRNO_OFFSET] = "Missing or unavailable event queue",
+	[KFI_EDOMAIN - KFI_ERRNO_OFFSET] = "Invalid resource domain",
+	[KFI_ENOCQ - KFI_ERRNO_OFFSET] =
+		"Missing or unavailable completion queue",
+	[KFI_ECRC - KFI_ERRNO_OFFSET] = "CRC error",
+	[KFI_ETRUNC - KFI_ERRNO_OFFSET] = "Truncation error",
+	[KFI_ENOKEY - KFI_ERRNO_OFFSET] = "Required key not available",
+	[KFI_ENOAV - KFI_ERRNO_OFFSET] =
+		"Missing or unavailable address vector",
+	[KFI_EOVERRUN - KFI_ERRNO_OFFSET] = "Queue has been overrun",
+};
+
 const char *kfi_strerror(int errnum)
 {
-        static char buf[16];
+	static char buf[16];
 
-        snprintf(buf, sizeof(buf), "%d", errnum);
-        return buf;
+	if (errnum < KFI_ERRNO_OFFSET) {
+		snprintf(buf, sizeof(buf), "%d", errnum);
+		return buf;
+	} else if (errnum < FI_ERRNO_MAX) {
+		return errstr[errnum - KFI_ERRNO_OFFSET];
+	} else {
+		return errstr[KFI_EOTHER  - KFI_ERRNO_OFFSET];
+	}
+
 }
 EXPORT_SYMBOL(kfi_strerror);
 

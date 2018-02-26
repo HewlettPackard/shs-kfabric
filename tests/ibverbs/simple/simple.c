@@ -32,6 +32,12 @@
  * SOFTWARE.
  */
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#include <linux/sched/signal.h>
+#endif
+
+#include <linux/signal.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/inet.h>
@@ -59,11 +65,10 @@ MODULE_LICENSE("Dual BSD/GPL");
 #include <kfi_log.h>
 
 /* Command line arguments */
-
 static char role[10] = {0};
 static char addr_str[INET_ADDRSTRLEN] = {0};
-static int port = 0;
-static bool server = false;
+static int port;
+static bool server;
 struct sockaddr sock_addr = {0};
 
 module_param_string(role, role, sizeof(role), 0);
@@ -76,13 +81,11 @@ MODULE_PARM_DESC(port, "Server: listening port; Client: port to connect to.");
 static int parse_module_arg(void);
 
 /* Server and client threads */
-
-struct task_struct *work_thread = NULL;
+struct task_struct *work_thread;
 static int simple_server(void *data);
 static int simple_client(void *data);
 
 /* End point resources */
-
 #define BUF_SIZE 262144
 #define SND_SIZE 2048
 #define RCV_SIZE 2048
@@ -113,7 +116,7 @@ struct ep_ctx {
 	struct kfid_cq *rcq;
 	struct kfi_eq_attr eq_attr;
 	struct kfi_cq_attr cq_attr;
-	void * buf;
+	void *buf;
 	uint64_t buf_dma;
 	int buflen;
 	struct lcl_mem_ctx lclmem;
@@ -172,7 +175,6 @@ static int testcase_compare_client(struct ep_ctx *ctx, unsigned char pattern);
 static int testcase_compare_server(struct ep_ctx *ctx, unsigned char pattern);
 
 /* Fabric info dump routines */
-
 #define DUMP_SIZE 10000
 static int dump_info(struct kfi_info *fi);
 
@@ -181,15 +183,16 @@ kfi_test_simple_init(void)
 {
 	int ret = 0;
 
-	if (( ret = parse_module_arg() )) {
+	ret = parse_module_arg();
+	if (ret) {
 		LOG_ERR("Argument parsing error.");
 		goto err;
 	}
 	LOG_INFO("Module loaded. Role - %s; Address - %s; Port - %d.",
-	         role, addr_str, port);
+		 role, addr_str, port);
 
 	work_thread = kthread_create(server ? simple_server : simple_client,
-	                             NULL, "test (simple) thread");
+				     NULL, "test (simple) thread");
 	if (!IS_ERR(work_thread)) {
 		wake_up_process(work_thread);
 		LOG_INFO("Started work thread.");
@@ -210,12 +213,11 @@ kfi_test_simple_exit(void)
 	int ret = 0;
 
 	send_sig(SIGINT, work_thread, 1);
-	if (( ret = kthread_stop(work_thread) )) {
+	ret = kthread_stop(work_thread);
+	if (ret)
 		LOG_INFO("Stopped work thread.");
-	} else {
+	else
 		LOG_ERR("Stopped work thread, err code %d.", ret);
-	}
-	return;
 }
 
 static int
@@ -226,71 +228,76 @@ simple_server(void *data)
 	unsigned char pattern = 0;
 	int ret = 0;
 
+	ctx.eq_attr.wait_obj = KFI_WAIT_QUEUE;
+	ctx.cq_attr.wait_obj = KFI_WAIT_QUEUE;
+	lctx.eq_attr.wait_obj = KFI_WAIT_QUEUE;
+
 	allow_signal(SIGINT);
 	set_current_state(TASK_INTERRUPTIBLE);
 
-	if (( ret = server_listen(&lctx) )) {
+	ret = server_listen(&lctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = server_connect(&lctx, &ctx) )) {
+
+	ret = server_connect(&lctx, &ctx);
+	if (ret)
 		goto exit;
-	}
 
 	/* Data operation. */
-	pattern ++;
-	if (( ret = testcase_send_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_send_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_sendv_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_sendv_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_senddata_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_senddata_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_write_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_write_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_writev_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_writev_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_writedata_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_writedata_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_read_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_read_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_readv_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_readv_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_atomic_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_atomic_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_fetch_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_fetch_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_compare_server(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_compare_server(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
 exit:
 	server_shutdown(&lctx, &ctx);
@@ -311,68 +318,71 @@ simple_client(void *data)
 	unsigned char pattern = 0;
 	int ret = 0;
 
+	ctx.eq_attr.wait_obj = KFI_WAIT_QUEUE;
+	ctx.cq_attr.wait_obj = KFI_WAIT_QUEUE;
+
 	allow_signal(SIGINT);
 	set_current_state(TASK_INTERRUPTIBLE);
 
-	if (( ret = client_connect(&ctx) )) {
+	ret = client_connect(&ctx);
+	if (ret)
 		goto exit;
-	}
 
 	/* Data operation. */
-	pattern ++;
-	if (( ret = testcase_send_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_send_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_sendv_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_sendv_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_senddata_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_senddata_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_write_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_write_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_writev_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_writev_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_writedata_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_writedata_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_read_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_read_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_readv_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_readv_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_atomic_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_atomic_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_fetch_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_fetch_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
-	pattern ++;
-	if (( ret = testcase_compare_client(&ctx, pattern) )) {
+	pattern++;
+	ret = testcase_compare_client(&ctx, pattern);
+	if (ret)
 		goto exit;
-	}
 
 exit:
 	client_shutdown(&ctx);
@@ -406,13 +416,13 @@ parse_module_arg(void)
 		return -EINVAL;
 	}
 
-	if (!in4_pton(addr_str, -1, (u8*)&addr, -1, (const char**)&end)) {
+	if (!in4_pton(addr_str, -1, (u8 *)&addr, -1, (const char **)&end)) {
 		LOG_ERR("Invalid address - %s.", addr_str);
 		return -EINVAL;
 	}
-	((struct sockaddr_in*)&sock_addr)->sin_family = AF_INET;
-	((struct sockaddr_in*)&sock_addr)->sin_port = port;
-	((struct sockaddr_in*)&sock_addr)->sin_addr.s_addr = addr;
+	((struct sockaddr_in *)&sock_addr)->sin_family = AF_INET;
+	((struct sockaddr_in *)&sock_addr)->sin_port = port;
+	((struct sockaddr_in *)&sock_addr)->sin_addr.s_addr = addr;
 
 	return 0;
 }
@@ -434,45 +444,53 @@ server_listen(struct lep_ctx *lctx)
 
 	LOG_INFO("Get info with following hints:");
 	dump_info(&hints);
-	ret = kfi_getinfo(0, &hints, &lfi);
+	ret = kfi_getinfo(0, NULL, NULL, 0, &hints, &lfi);
 	if (!ret) {
 		LOG_INFO("Got fabric info.");
 		LOG_INFO("KFI_INFO from provider %s version %d.%d:",
-				lfi->fabric_attr->prov_name,
-				KFI_MAJOR(lfi->fabric_attr->prov_version),
-				KFI_MINOR(lfi->fabric_attr->prov_version));
+			 lfi->fabric_attr->prov_name,
+			 KFI_MAJOR(lfi->fabric_attr->prov_version),
+			 KFI_MINOR(lfi->fabric_attr->prov_version));
 		dump_info(lfi);
 	} else {
 		LOG_ERR("Failed to get fabric info.");
 		goto exit;
 	}
 
-	if (( ret = kfi_fabric(lfi->fabric_attr, &lctx->fab, NULL) )) {
+	ret = kfi_fabric(lfi->fabric_attr, &lctx->fab, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create fabric.");
 		goto exit;
 	}
-	if (( ret = kfi_passive_ep(lctx->fab, lfi, &lctx->pep, NULL) )) {
+
+	ret = kfi_passive_ep(lctx->fab, lfi, &lctx->pep, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create passive endpoint.");
 		goto exit;
 	}
-	if (( ret = kfi_eq_open(lctx->fab, &lctx->eq_attr, &lctx->eq, NULL) )) {
+
+	ret = kfi_eq_open(lctx->fab, &lctx->eq_attr, &lctx->eq, NULL, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create listender event queue.");
 		goto exit;
 	}
-	if (( ret = kfi_pep_bind(lctx->pep, &lctx->eq->fid, 0) )) {
-		LOG_ERR("Failed to bind listender event queue to passive endpoint.");
+
+	ret = kfi_pep_bind(lctx->pep, &lctx->eq->fid, 0);
+	if (ret) {
+		LOG_ERR("Failed to bind listener event queue to passive EP.");
 		goto exit;
 	}
-	if (( ret = kfi_listen(lctx->pep) )) {
+
+	ret = kfi_listen(lctx->pep);
+	if (ret) {
 		LOG_ERR("Passive endpoint failed to start listening.");
 		goto exit;
 	}
 	LOG_INFO("Passive endpoint listening.");
 
 exit:
-	if (lfi) {
+	if (lfi)
 		kfi_freeinfo(lfi);
-	}
 	return ret;
 }
 
@@ -485,14 +503,15 @@ server_connect(struct lep_ctx *lctx, struct ep_ctx *ctx)
 	int ret = 0;
 	ssize_t rd = 0;
 
-	entry = kzalloc(sizeof(struct kfi_eq_cm_entry) + sizeof(struct kfi_rma_iov),
-	                GFP_KERNEL);
+	entry = kzalloc((sizeof(struct kfi_eq_cm_entry)
+			+ sizeof(struct kfi_rma_iov)), GFP_KERNEL);
 	if (!entry) {
 		ret = -ENOMEM;
 		LOG_ERR("Failed to allocate event entry.");
 		goto exit;
 	}
-	rd = kfi_eq_sread(lctx->eq, &event, entry, sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
+	rd = kfi_eq_sread(lctx->eq, &event, entry,
+			  sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
 	if (rd < sizeof(*entry)) {
 		LOG_ERR("Failed to read event.");
 		ret = (int)rd;
@@ -505,36 +524,44 @@ server_connect(struct lep_ctx *lctx, struct ep_ctx *ctx)
 	}
 	fi = entry->info;
 	LOG_INFO("Received connection request from %pI4.",
-		&((struct sockaddr_in*)(fi->dest_addr))->sin_addr.s_addr);
+		 &((struct sockaddr_in *)(fi->dest_addr))->sin_addr.s_addr);
 
-	if (( ret = setup_ctx(ctx, fi) )) {
+	ret = setup_ctx(ctx, fi);
+	if (ret) {
 		LOG_ERR("Failed to set up endpoint context.");
 		kfi_reject(lctx->pep, fi->handle, NULL, 0);
 		goto exit;
 	}
-	ctx->rmtmem = *(struct kfi_rma_iov*)&entry->data;
+
+	ctx->rmtmem = *(struct kfi_rma_iov *)&entry->data;
 	if (ctx->rmtmem.len != DATA_SIZE) {
 		LOG_ERR("Invalid remote memory size.");
 		ret = -EINVAL;
 		kfi_reject(lctx->pep, fi->handle, NULL, 0);
 		goto exit;
 	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret) {
 		kfi_reject(lctx->pep, fi->handle, NULL, 0);
 		goto exit;
 	}
-	if (( ret = kfi_accept(ctx->ep, &ctx->rmtexp, sizeof(ctx->rmtexp)) )) {
+
+	ret = kfi_accept(ctx->ep, &ctx->rmtexp, sizeof(ctx->rmtexp));
+	if (ret) {
 		LOG_ERR("Failed to accept connection.");
 		kfi_reject(lctx->pep, fi->handle, NULL, 0);
 		goto exit;
 	}
+
 	rd = kfi_eq_sread(ctx->eq, &event, entry,
-	                  sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
+			  sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
 	if (rd != sizeof(*entry)) {
 		LOG_ERR("Failed to read event.");
 		ret = (int)rd;
 		goto exit;
 	}
+
 	if (event != KFI_CONNECTED) {
 		LOG_ERR("Unable to establish connection.");
 		ret = -EIO;
@@ -544,12 +571,9 @@ server_connect(struct lep_ctx *lctx, struct ep_ctx *ctx)
 
 	LOG_INFO("Connection established !");
 exit:
-	if (entry) {
-		kfree(entry);
-	}
-	if (fi) {
+	kfree(entry);
+	if (fi)
 		kfi_freeinfo(fi);
-	}
 	return ret;
 }
 
@@ -572,7 +596,7 @@ client_connect(struct ep_ctx *ctx)
 	}
 	LOG_INFO("Get info with following hints:");
 	dump_info(&hints);
-	ret = kfi_getinfo(0, &hints, &fi);
+	ret = kfi_getinfo(0, NULL, NULL, 0, &hints, &fi);
 	if (!ret) {
 		LOG_INFO("KFI_INFO from provider %s version %d.%d:",
 				fi->fabric_attr->prov_name,
@@ -584,23 +608,29 @@ client_connect(struct ep_ctx *ctx)
 		goto exit;
 	}
 
-	if (( ret = setup_ctx(ctx, fi) )) {
+	ret = setup_ctx(ctx, fi);
+	if (ret) {
 		LOG_ERR("Failed to set up endpoint context.");
 		goto exit;
 	}
 	LOG_INFO("Initiating connection.");
-	if (( ret = kfi_connect(ctx->ep, NULL, &ctx->rmtexp, sizeof(ctx->rmtexp)) )) {
+
+	ret = kfi_connect(ctx->ep, NULL, &ctx->rmtexp, sizeof(ctx->rmtexp));
+	if (ret) {
 		LOG_ERR("Failed to initiate connection.");
 		goto exit;
 	}
-	entry = kzalloc(sizeof(struct kfi_eq_cm_entry) + sizeof(struct kfi_rma_iov),
-	                GFP_KERNEL);
+
+	entry = kzalloc((sizeof(struct kfi_eq_cm_entry)
+			 + sizeof(struct kfi_rma_iov)), GFP_KERNEL);
 	if (!entry) {
 		ret = -ENOMEM;
 		LOG_ERR("Failed to allocate event entry.");
 		goto exit;
 	}
-	rd = kfi_eq_sread(ctx->eq, &event, entry, sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
+
+	rd = kfi_eq_sread(ctx->eq, &event, entry,
+			  sizeof(*entry) + sizeof(struct kfi_rma_iov), -1, 0);
 	if (rd < sizeof(struct kfi_eq_cm_entry *)) {
 		LOG_ERR("Failed to read event.");
 		ret = (int)rd;
@@ -613,7 +643,7 @@ client_connect(struct ep_ctx *ctx)
 	}
 	ctx->connected = true;
 
-	ctx->rmtmem = *(struct kfi_rma_iov*)&entry->data;
+	ctx->rmtmem = *(struct kfi_rma_iov *)&entry->data;
 	if (ctx->rmtmem.len != DATA_SIZE) {
 		LOG_ERR("Invalid remote memory size.");
 		ret = -EINVAL;
@@ -622,12 +652,9 @@ client_connect(struct ep_ctx *ctx)
 	LOG_INFO("Connection established !");
 
 exit:
-	if (entry) {
-		kfree(entry);
-	}
-	if (fi) {
+	kfree(entry);
+	if (fi)
 		kfi_freeinfo(fi);
-	}
 	return ret;
 }
 
@@ -638,15 +665,13 @@ server_shutdown(struct lep_ctx *lctx, struct ep_ctx *ctx)
 
 	if (ctx->connected) {
 		ret = kfi_shutdown(ctx->ep, 0);
-		if (!ret) {
+		if (!ret)
 			LOG_INFO("Connection shutdown.");
-		} else {
+		else
 			LOG_WARN("Connections shutdown error.");
-		}
 	}
 	free_lctx(lctx);
 	free_ctx(ctx);
-	return;
 }
 
 static void
@@ -656,14 +681,12 @@ client_shutdown(struct ep_ctx *ctx)
 
 	if (ctx->connected) {
 		ret = kfi_shutdown(ctx->ep, 0);
-		if (!ret) {
+		if (!ret)
 			LOG_INFO("Connection shutdown.");
-		} else {
+		else
 			LOG_WARN("Connections shutdown error.");
-		}
 	}
 	free_ctx(ctx);
-	return;
 }
 
 static int
@@ -687,41 +710,52 @@ dump_info(struct kfi_info *fi)
 			(unsigned long)fi->mode,
 			fi->addr_format);
 		if (fi->src_addrlen) {
+			struct sockaddr_in *addr =
+				(struct sockaddr_in *)(fi->src_addr);
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tSRC_ADDR:\t\t\t%pI4\n",
-				&((struct sockaddr_in*)(fi->src_addr))->sin_addr.s_addr
+				&addr->sin_addr.s_addr
 			);
 		}
 		if (fi->dest_addrlen) {
+			struct sockaddr_in *addr =
+				(struct sockaddr_in *)(fi->dest_addr);
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tDST_ADDR:\t\t\t%pI4\n",
-				&((struct sockaddr_in*)(fi->dest_addr))->sin_addr.s_addr
+				&addr->sin_addr.s_addr
 			);
 		}
 		if (fi->fabric_attr) {
+			int major = KFI_MAJOR(fi->fabric_attr->prov_version);
+			int minor = KFI_MINOR(fi->fabric_attr->prov_version);
 			struct kfi_fabric_attr *attr = fi->fabric_attr;
+
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tFabric Attributes:\n");
 			if (attr->name) {
-				snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
+				snprintf(buf + strlen(buf),
+					 DUMP_SIZE - strlen(buf),
 					"\t\t\tName:\t\t\t%s\n",
 					attr->name);
 			}
 			if (attr->prov_name) {
-				snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
+				snprintf(buf + strlen(buf),
+					 DUMP_SIZE - strlen(buf),
 					"\t\t\tProv_name:\t\t%s\n"
 					"\t\t\tProv_ver:\t\t%d.%d\n",
 					attr->prov_name,
-					KFI_MAJOR(fi->fabric_attr->prov_version),
-					KFI_MINOR(fi->fabric_attr->prov_version));
+					major,
+					minor);
 			}
 		}
 		if (fi->domain_attr) {
 			struct kfi_domain_attr *attr = fi->domain_attr;
+
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tDomain Attributes:\n");
 			if (attr->name) {
-				snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
+				snprintf(buf + strlen(buf),
+					 DUMP_SIZE - strlen(buf),
 					"\t\t\tName:\t\t\t%s\n",
 					attr->name);
 			}
@@ -753,6 +787,7 @@ dump_info(struct kfi_info *fi)
 		}
 		if (fi->ep_attr) {
 			struct kfi_ep_attr *attr = fi->ep_attr;
+
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tEnd Point Attributes:\n"
 				"\t\t\tProtocol:\t\t%u\n"
@@ -778,6 +813,7 @@ dump_info(struct kfi_info *fi)
 		}
 		if (fi->tx_attr) {
 			struct kfi_tx_attr *attr = fi->tx_attr;
+
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tTx Attributes:\n"
 				"\t\t\tCaps:\t\t\t%lx\n"
@@ -801,6 +837,7 @@ dump_info(struct kfi_info *fi)
 		}
 		if (fi->rx_attr) {
 			struct kfi_rx_attr *attr = fi->rx_attr;
+
 			snprintf(buf + strlen(buf), DUMP_SIZE - strlen(buf),
 				"\t\tRx Attributes:\n"
 				"\t\t\tCaps:\t\t\t%lx\n"
@@ -834,44 +871,60 @@ setup_ctx(struct ep_ctx *ctx, struct kfi_info *fi)
 	int i = 0;
 	char *cur = NULL;
 
-	if (( ret = kfi_fabric(fi->fabric_attr, &ctx->fab, NULL) )) {
+	ret = kfi_fabric(fi->fabric_attr, &ctx->fab, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create fabric.");
 		goto err;
 	}
-	if (( ret = kfi_domain(ctx->fab, fi, &ctx->dom, NULL) )) {
+
+	ret = kfi_domain(ctx->fab, fi, &ctx->dom, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create domain.");
 		goto err;
 	}
-	if (( ret = kfi_endpoint(ctx->dom, fi, &ctx->ep, NULL) )) {
+
+	ret = kfi_endpoint(ctx->dom, fi, &ctx->ep, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create endpoint.");
 		goto err;
 	}
-	if (( ret = kfi_eq_open(ctx->fab, &ctx->eq_attr, &ctx->eq, NULL) )) {
+
+	ret = kfi_eq_open(ctx->fab, &ctx->eq_attr, &ctx->eq, NULL, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create event queue.");
 		goto err;
 	}
-	if (( ret = kfi_ep_bind(ctx->ep, &ctx->eq->fid, 0) )) {
+
+	ret = kfi_ep_bind(ctx->ep, &ctx->eq->fid, 0);
+	if (ret) {
 		LOG_ERR("Failed to bind event queue to endpoint.");
 		goto err;
 	}
 
 	ctx->cq_attr.format = KFI_CQ_FORMAT_DATA;
 	ctx->cq_attr.size = fi->tx_attr->size;
-	if (( ret = kfi_cq_open(ctx->dom, &ctx->cq_attr, &ctx->scq, NULL) )) {
+
+	ret = kfi_cq_open(ctx->dom, &ctx->cq_attr, &ctx->scq, NULL, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create send completion queue.");
 		goto err;
 	}
-	if (( ret = kfi_ep_bind(ctx->ep, &ctx->scq->fid, KFI_SEND) )) {
+
+	ret = kfi_ep_bind(ctx->ep, &ctx->scq->fid, KFI_SEND);
+	if (ret) {
 		LOG_ERR("Failed to bind send completion queue to endpoint.");
 		goto err;
 	}
 
 	ctx->cq_attr.size = fi->rx_attr->size;
-	if (( ret = kfi_cq_open(ctx->dom, &ctx->cq_attr, &ctx->rcq, NULL) )) {
+	ret = kfi_cq_open(ctx->dom, &ctx->cq_attr, &ctx->rcq, NULL, NULL);
+	if (ret) {
 		LOG_ERR("Failed to create recv completion queue.");
 		goto err;
 	}
-	if (( ret = kfi_ep_bind(ctx->ep, &ctx->rcq->fid, KFI_RECV) )) {
+
+	ret = kfi_ep_bind(ctx->ep, &ctx->rcq->fid, KFI_RECV);
+	if (ret) {
 		LOG_ERR("Failed to bind recv completion queue to endpoint.");
 		goto err;
 	}
@@ -884,10 +937,10 @@ setup_ctx(struct ep_ctx *ctx, struct kfi_info *fi)
 		goto err;
 	}
 
-	if (( ret = kfi_mr_reg(ctx->dom, ctx->buf, ctx->buflen,
-	                       KFI_REMOTE_READ | KFI_REMOTE_WRITE |
-			       KFI_READ | KFI_WRITE,
-	                       0, 0, 0, &ctx->mr, NULL, &ctx->buf_dma) )) {
+	ret = kfi_mr_reg(ctx->dom, ctx->buf, ctx->buflen,
+			 KFI_REMOTE_READ | KFI_REMOTE_WRITE | KFI_READ |
+			 KFI_WRITE, 0, 0, 0, &ctx->mr, NULL);
+	if (ret) {
 		LOG_ERR("Failed to register memory.");
 		goto err;
 	}
@@ -904,23 +957,24 @@ setup_ctx(struct ep_ctx *ctx, struct kfi_info *fi)
 
 	cur += RCV_SIZE;
 	ctx->lclmem.iov_count = IOV_NUM;
-	for (i = 0; i < IOV_NUM; i ++) {
+	for (i = 0; i < IOV_NUM; i++) {
 		ctx->lclmem.descv[i] = kfi_mr_desc(ctx->mr);
 		ctx->lclmem.iov[i].iov_base = cur;
 		ctx->lclmem.iov[i].iov_len = SEG_SIZE;
 		cur += SEG_SIZE;
 	}
 
-	ctx->rmtexp.addr = ctx->buf_dma + SND_SIZE + RCV_SIZE;
+	ctx->rmtexp.addr = ctx->mr->iova + SND_SIZE + RCV_SIZE;
 	ctx->rmtexp.len = DATA_SIZE;
 	ctx->rmtexp.key = ctx->mr->key;
 
 	LOG_INFO("Allocated buffer: addr 0x%p mapped 0x%llx size %d.",
-	                ctx->buf, ctx->buf_dma, ctx->buflen);
+		 ctx->buf, ctx->buf_dma, ctx->buflen);
 	LOG_INFO("Export to remote node mapped 0x%llx key 0x%llx size %lu.",
-	                ctx->rmtexp.addr, ctx->rmtexp.key, ctx->rmtexp.len);
+		 ctx->rmtexp.addr, ctx->rmtexp.key, ctx->rmtexp.len);
 
-	if (( ret = kfi_enable(ctx->ep) )) {
+	ret = kfi_enable(ctx->ep);
+	if (ret) {
 		LOG_ERR("Failed to activate endpoint.");
 		goto err;
 	}
@@ -933,9 +987,9 @@ err:
 static void
 free_ctx(struct ep_ctx *ctx)
 {
-	if (!ctx) {
+	if (!ctx)
 		return;
-	}
+
 	if (ctx->ep) {
 		kfi_close(&ctx->ep->fid);
 		ctx->ep = NULL;
@@ -964,19 +1018,16 @@ free_ctx(struct ep_ctx *ctx)
 		kfi_close(&ctx->fab->fid);
 		ctx->fab = NULL;
 	}
-	if (ctx->buf) {
-		kfree(ctx->buf);
-		ctx->buf = NULL;
-	}
-	return;
+	kfree(ctx->buf);
+	ctx->buf = NULL;
 }
 
 static void
 free_lctx(struct lep_ctx *lctx)
 {
-	if (!lctx) {
+	if (!lctx)
 		return;
-	}
+
 	if (lctx->eq) {
 		kfi_close(&lctx->eq->fid);
 		lctx->eq = NULL;
@@ -989,30 +1040,30 @@ free_lctx(struct lep_ctx *lctx)
 		kfi_close(&lctx->fab->fid);
 		lctx->fab = NULL;
 	}
-	return;
 }
 
 static int
 _send_msg(struct ep_ctx *ctx, bool poison)
 {
-	static uint64_t token = 0;
-	static void *cookie = NULL;
+	static uint64_t token;
+	static void *cookie;
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
 	ssize_t rd = 0;
 	int ret = 0;
 
-	token ++;
+	token++;
 	token %= MAX_TOKEN;
-	if (!poison) {
+	if (!poison)
 		*(uint64_t *)(ctx->lclmem.snd_addr) = token;
-	} else {
+	else
 		*(uint64_t *)(ctx->lclmem.snd_addr) = MAX_TOKEN;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_send(ctx->ep, ctx->lclmem.snd_addr, ctx->lclmem.snd_len,
-	                     ctx->lclmem.snd_desc, 0, cookie) )) {
+
+	ret = kfi_send(ctx->ep, ctx->lclmem.snd_addr, ctx->lclmem.snd_len,
+		       ctx->lclmem.snd_desc, 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1024,9 +1075,9 @@ _send_msg(struct ep_ctx *ctx, bool poison)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		goto exit;
 	}
@@ -1049,13 +1100,13 @@ send_poison(struct ep_ctx *ctx)
 static int
 recv_msg(struct ep_ctx *ctx)
 {
-	static uint64_t token = 0;
+	static uint64_t token;
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
 	ssize_t rd = 0;
 	int ret = 0;
 
-	token ++;
+	token++;
 	token %= MAX_TOKEN;
 	rd = kfi_cq_sread(ctx->rcq, &wc, 1, NULL, 0);
 	if (rd != 1) {
@@ -1065,9 +1116,9 @@ recv_msg(struct ep_ctx *ctx)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->rcq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->rcq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -1079,7 +1130,7 @@ recv_msg(struct ep_ctx *ctx)
 	}
 	if (*(uint64_t *)(ctx->lclmem.rcv_addr) != token) {
 		LOG_ERR("Token mismatch, received %llu, expecting %llu.",
-		        *(uint64_t *)(ctx->lclmem.rcv_addr), token);
+			*(uint64_t *)(ctx->lclmem.rcv_addr), token);
 		ret = -EIO;
 		goto exit;
 	}
@@ -1090,14 +1141,10 @@ exit:
 static int
 prep_recv(struct ep_ctx *ctx)
 {
-	int ret = 0;
-
-	if (( ret = kfi_recv(ctx->ep, ctx->lclmem.rcv_addr, ctx->lclmem.rcv_len,
-	                     ctx->lclmem.rcv_desc, 0, NULL) )) {
+	int ret = kfi_recv(ctx->ep, ctx->lclmem.rcv_addr, ctx->lclmem.rcv_len,
+			   ctx->lclmem.rcv_desc, 0, NULL);
+	if (ret)
 		LOG_ERR("Failed to post receive descriptor.");
-		goto exit;
-	}
-exit:
 	return ret;
 }
 
@@ -1106,7 +1153,7 @@ testcase_send_client(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
@@ -1114,16 +1161,18 @@ testcase_send_client(struct ep_ctx *ctx, unsigned char pattern)
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_recv(ctx->ep, ctx->lclmem.iov[0].iov_base,
-	                     ctx->lclmem.iov[0].iov_len,
-	                     ctx->lclmem.descv[0], 0, cookie) )) {
+
+	ret = kfi_recv(ctx->ep, ctx->lclmem.iov[0].iov_base,
+		       ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
+		       cookie);
+	if (ret) {
 		LOG_ERR("Failed to post receive descriptor.");
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	rd = kfi_cq_sread(ctx->rcq, &wc, 1, NULL, 0);
 	if (rd != 1 || (wc.op_context) != cookie) {
@@ -1133,29 +1182,31 @@ testcase_send_client(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->rcq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->rcq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	check = (unsigned char*)(ctx->lclmem.iov[0].iov_base);
-	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i ++) {
+	check = (unsigned char *)(ctx->lclmem.iov[0].iov_base);
+	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i++) {
 		if (*check != pattern) {
-			LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
-				i, *check, pattern);
-			LOG_INFO("Sendign poison message to abort tests.");
+			LOG_ERR("Data mismatch");
+			LOG_ERR("\tbyte %d, received %u, expected %u.", i,
+				*check, pattern);
+			LOG_INFO("Sending poison message to abort tests.");
 			(void)send_poison(ctx);
 			ret = -EIO;
 			goto exit;
 		}
-		check ++;
+		check++;
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_send() / kfi_recv() pass.");
 exit:
@@ -1167,23 +1218,27 @@ testcase_send_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 
-	memset(ctx->lclmem.iov[0].iov_base, (int)pattern, ctx->lclmem.iov[0].iov_len);
+	memset(ctx->lclmem.iov[0].iov_base, (int)pattern,
+	       ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_send(ctx->ep, ctx->lclmem.iov[0].iov_base,
-	                     ctx->lclmem.iov[0].iov_len,
-	                     ctx->lclmem.descv[0], 0, cookie) )) {
+
+	ret = kfi_send(ctx->ep, ctx->lclmem.iov[0].iov_base,
+		       ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
+		       cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1195,20 +1250,21 @@ testcase_send_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_send() / kfi_recv() pass.");
 exit:
@@ -1220,25 +1276,27 @@ testcase_sendv_client(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
 	int i = 0, j = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, 0, ctx->lclmem.iov[j].iov_len);
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, 0,
+		       ctx->lclmem.iov[j].iov_len);
 	}
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_recvv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
-		              ctx->lclmem.iov_count, 0, cookie) )) {
+	ret = kfi_recvv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
+			ctx->lclmem.iov_count, 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post receive descriptor.");
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	rd = kfi_cq_sread(ctx->rcq, &wc, 1, NULL, 0);
 	if (rd != 1 || (wc.op_context) != cookie) {
@@ -1248,31 +1306,33 @@ testcase_sendv_client(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->rcq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->rcq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		check = (unsigned char*)(ctx->lclmem.iov[j].iov_base);
-		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i ++) {
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		check = (unsigned char *)(ctx->lclmem.iov[j].iov_base);
+		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i++) {
 			if (*check != (pattern + j)) {
-				LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+				LOG_ERR("Data mismatch");
+				LOG_ERR("\tbyte %d, received %u, expecting %u.",
 					i, *check, (pattern + j));
-				LOG_INFO("Sendign poison message to abort tests.");
+				LOG_INFO("Send poison message to abort tests.");
 				(void)send_poison(ctx);
 				ret = -EIO;
 				goto exit;
 			}
-			check ++;
+			check++;
 		}
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_sendv() / kfi_recvv() pass.");
 exit:
@@ -1284,25 +1344,28 @@ testcase_sendv_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int j = 0;
 	int ret = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, pattern+j, ctx->lclmem.iov[j].iov_len);
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, pattern+j,
+		       ctx->lclmem.iov[j].iov_len);
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_sendv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
-	                      ctx->lclmem.iov_count, 0, cookie) )) {
+	ret = kfi_sendv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
+			ctx->lclmem.iov_count, 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1314,20 +1377,21 @@ testcase_sendv_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_sendv() / kfi_recvv() pass.");
 exit:
@@ -1339,7 +1403,7 @@ testcase_senddata_client(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
@@ -1347,16 +1411,18 @@ testcase_senddata_client(struct ep_ctx *ctx, unsigned char pattern)
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_recv(ctx->ep, ctx->lclmem.iov[0].iov_base,
-	                     ctx->lclmem.iov[0].iov_len,
-	                     ctx->lclmem.descv[0], 0, cookie) )) {
+
+	ret = kfi_recv(ctx->ep, ctx->lclmem.iov[0].iov_base,
+		       ctx->lclmem.iov[0].iov_len,
+		       ctx->lclmem.descv[0], 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post receive descriptor.");
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	rd = kfi_cq_sread(ctx->rcq, &wc, 1, NULL, 0);
 	if (rd != 1 || (wc.op_context) != cookie) {
@@ -1366,9 +1432,9 @@ testcase_senddata_client(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->rcq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->rcq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -1376,28 +1442,30 @@ testcase_senddata_client(struct ep_ctx *ctx, unsigned char pattern)
 
 	if (wc.data != (pattern + 1)) {
 		LOG_ERR("Immdiate data mismatch, received %llu, expecting %u.",
-		        wc.data, (pattern + 1));
+			wc.data, (pattern + 1));
 		LOG_INFO("Sendign poison message to abort tests.");
 		(void)send_poison(ctx);
 		ret = -EIO;
 		goto exit;
 	}
 
-	check = (unsigned char*)(ctx->lclmem.iov[0].iov_base);
-	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i ++) {
+	check = (unsigned char *)(ctx->lclmem.iov[0].iov_base);
+	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i++) {
 		if (*check != pattern) {
-			LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+			LOG_ERR("Data mismatch");
+			LOG_ERR("\tbyte %d, received %u, expecting %u.",
 				i, *check, pattern);
 			LOG_INFO("Sendign poison message to abort tests.");
 			(void)send_poison(ctx);
 			ret = -EIO;
 			goto exit;
 		}
-		check ++;
+		check++;
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_senddata() / kfi_recv() pass.");
 exit:
@@ -1409,23 +1477,26 @@ testcase_senddata_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 
-	memset(ctx->lclmem.iov[0].iov_base, (int)pattern, ctx->lclmem.iov[0].iov_len);
+	memset(ctx->lclmem.iov[0].iov_base, (int)pattern,
+	       ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_senddata(ctx->ep, ctx->lclmem.iov[0].iov_base,
-	                     ctx->lclmem.iov[0].iov_len,
-	                     ctx->lclmem.descv[0], (pattern + 1), 0, cookie) )) {
+	ret = kfi_senddata(ctx->ep, ctx->lclmem.iov[0].iov_base,
+			   ctx->lclmem.iov[0].iov_len,
+			   ctx->lclmem.descv[0], (pattern + 1), 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1437,20 +1508,21 @@ testcase_senddata_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_senddata() / kfi_recv() pass.");
 exit:
@@ -1465,33 +1537,35 @@ testcase_write_client(struct ep_ctx *ctx, unsigned char pattern)
 	int i = 0;
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
-	if (( ret = prep_recv(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	check = (unsigned char*)(ctx->lclmem.iov[0].iov_base);
-	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i ++) {
+	check = (unsigned char *)(ctx->lclmem.iov[0].iov_base);
+	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i++) {
 		if (*check != pattern) {
-			LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+			LOG_ERR("Data mismatch");
+			LOG_ERR("\tbyte %d, received %u, expecting %u.",
 				i, *check, pattern);
 			LOG_INFO("Sendign poison message to abort tests.");
 			(void)send_poison(ctx);
 			ret = -EIO;
 			goto exit;
 		}
-		check ++;
+		check++;
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_write() pass.");
 exit:
@@ -1503,27 +1577,31 @@ testcase_write_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 
-	memset(ctx->lclmem.iov[0].iov_base, (int)pattern, ctx->lclmem.iov[0].iov_len);
+	memset(ctx->lclmem.iov[0].iov_base, (int)pattern,
+	       ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_write(ctx->ep, (const void*)ctx->lclmem.iov[0].iov_base,
-	                ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
-	                ctx->rmtmem.addr, ctx->rmtmem.key,
-	                cookie) )) {
+
+	ret = kfi_write(ctx->ep, (const void *)ctx->lclmem.iov[0].iov_base,
+			ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
+			ctx->rmtmem.addr, ctx->rmtmem.key, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
+
 	rd = kfi_cq_sread(ctx->scq, &wc, 1, NULL, 0);
 	if (rd != 1 || (wc.op_context) != cookie) {
 		LOG_ERR("Failed to receive data.");
@@ -1532,23 +1610,25 @@ testcase_write_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
-	if (( ret = send_msg(ctx) )) {
-		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
+
+	ret = prep_recv(ctx);
+	if (ret)
+		goto exit;
 
 	LOG_INFO("Testing API kfi_write() pass.");
 exit:
@@ -1562,38 +1642,42 @@ testcase_writev_client(struct ep_ctx *ctx, unsigned char pattern)
 	unsigned char *check = NULL;
 	int i = 0, j = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, 0, ctx->lclmem.iov[j].iov_len);
-	}
-	if (( ret = prep_recv(ctx) )) {
-		goto exit;
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, 0,
+		       ctx->lclmem.iov[j].iov_len);
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		check = (unsigned char*)(ctx->lclmem.iov[j].iov_base);
-		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i ++) {
+	ret = recv_msg(ctx);
+	if (ret)
+		goto exit;
+
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		check = (unsigned char *)(ctx->lclmem.iov[j].iov_base);
+		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i++) {
 			if (*check != pattern + j) {
-				LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+				LOG_ERR("Data mismatch");
+				LOG_ERR("\tbyte %d, received %u, expecting %u.",
 					i, *check, pattern + j);
-				LOG_INFO("Sendign poison message to abort tests.");
+				LOG_INFO("Poison message to abort tests.");
 				(void)send_poison(ctx);
 				ret = -EIO;
 				goto exit;
 			}
-			check ++;
+			check++;
 		}
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_writev() pass.");
 exit:
@@ -1605,26 +1689,29 @@ testcase_writev_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	int j = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, pattern + j, ctx->lclmem.iov[j].iov_len);
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, pattern + j,
+		       ctx->lclmem.iov[j].iov_len);
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_writev(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
-	                ctx->lclmem.iov_count, 0, ctx->rmtmem.addr,
-	                ctx->rmtmem.key, cookie) )) {
+	ret = kfi_writev(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
+			 ctx->lclmem.iov_count, 0, ctx->rmtmem.addr,
+			 ctx->rmtmem.key, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1636,23 +1723,25 @@ testcase_writev_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
-	if (( ret = send_msg(ctx) )) {
-		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
+
+	ret = prep_recv(ctx);
+	if (ret)
+		goto exit;
 
 	LOG_INFO("Testing API kfi_writev() pass.");
 exit:
@@ -1664,7 +1753,7 @@ testcase_writedata_client(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
@@ -1672,16 +1761,17 @@ testcase_writedata_client(struct ep_ctx *ctx, unsigned char pattern)
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_recv(ctx->ep, ctx->lclmem.iov[1].iov_base,
-	                     ctx->lclmem.iov[1].iov_len,
-	                     ctx->lclmem.descv[1], 0, cookie) )) {
+	ret = kfi_recv(ctx->ep, ctx->lclmem.iov[1].iov_base,
+		       ctx->lclmem.iov[1].iov_len,
+		       ctx->lclmem.descv[1], 0, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post receive descriptor.");
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	rd = kfi_cq_sread(ctx->rcq, &wc, 1, NULL, 0);
 	if (rd != 1 || (wc.op_context) != cookie) {
@@ -1691,9 +1781,9 @@ testcase_writedata_client(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->rcq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->rcq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -1701,28 +1791,30 @@ testcase_writedata_client(struct ep_ctx *ctx, unsigned char pattern)
 
 	if (wc.data != (pattern + 1)) {
 		LOG_ERR("Immdiate data mismatch, received %llu, expecting %u.",
-		        wc.data, (pattern + 1));
+			wc.data, (pattern + 1));
 		LOG_INFO("Sendign poison message to abort tests.");
 		(void)send_poison(ctx);
 		ret = -EIO;
 		goto exit;
 	}
 
-	check = (unsigned char*)(ctx->lclmem.iov[0].iov_base);
-	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i ++) {
+	check = (unsigned char *)(ctx->lclmem.iov[0].iov_base);
+	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i++) {
 		if (*check != pattern) {
-			LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+			LOG_ERR("Data mismatch");
+			LOG_ERR("\tbyte %d, received %u, expecting %u.",
 				i, *check, pattern);
-			LOG_INFO("Sendign poison message to abort tests.");
+			LOG_INFO("Sending poison message to abort tests.");
 			(void)send_poison(ctx);
 			ret = -EIO;
 			goto exit;
 		}
-		check ++;
+		check++;
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_writedata() pass.");
 exit:
@@ -1734,24 +1826,27 @@ testcase_writedata_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 
-	memset(ctx->lclmem.iov[0].iov_base, (int)pattern, ctx->lclmem.iov[0].iov_len);
+	memset(ctx->lclmem.iov[0].iov_base, (int)pattern,
+	       ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_writedata(ctx->ep, (const void*)ctx->lclmem.iov[0].iov_base,
-	                ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], (pattern + 1),
-	                0, ctx->rmtmem.addr, ctx->rmtmem.key,
-	                cookie) )) {;
+	ret = kfi_writedata(ctx->ep, (const void *)ctx->lclmem.iov[0].iov_base,
+			    ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0],
+			    (pattern + 1), 0, ctx->rmtmem.addr, ctx->rmtmem.key,
+			    cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1763,20 +1858,21 @@ testcase_writedata_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_writedata() pass.");
 exit:
@@ -1788,18 +1884,20 @@ testcase_read_client(struct ep_ctx *ctx, unsigned char pattern)
 {
 	int ret = 0;
 
-	memset(ctx->lclmem.iov[0].iov_base, (int)pattern, ctx->lclmem.iov[0].iov_len);
-	if (( ret = prep_recv(ctx) )) {
-		goto exit;
-	}
+	memset(ctx->lclmem.iov[0].iov_base, (int)pattern,
+	       ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = send_msg(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
+
+	ret = recv_msg(ctx);
+	if (ret)
+		goto exit;
 
 	LOG_INFO("Testing API kfi_read() pass.");
 exit:
@@ -1811,7 +1909,7 @@ testcase_read_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
@@ -1819,18 +1917,19 @@ testcase_read_server(struct ep_ctx *ctx, unsigned char pattern)
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_read(ctx->ep, ctx->lclmem.iov[0].iov_base,
-	                ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
-	                ctx->rmtmem.addr, ctx->rmtmem.key,
-	                cookie) )) {;
+	ret = kfi_read(ctx->ep, ctx->lclmem.iov[0].iov_base,
+		       ctx->lclmem.iov[0].iov_len, ctx->lclmem.descv[0], 0,
+		       ctx->rmtmem.addr, ctx->rmtmem.key, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1842,29 +1941,31 @@ testcase_read_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	check = (unsigned char*)(ctx->lclmem.iov[0].iov_base);
-	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i ++) {
+	check = (unsigned char *)(ctx->lclmem.iov[0].iov_base);
+	for (i = 0; i < ctx->lclmem.iov[0].iov_len; i++) {
 		if (*check != pattern) {
-			LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
+			LOG_ERR("Data mismatch");
+			LOG_ERR("\tbyte %d, received %u, expecting %u.",
 				i, *check, pattern);
 			LOG_INFO("Sendign poison message to abort tests.");
 			(void)send_poison(ctx);
 			ret = -EIO;
 			goto exit;
 		}
-		check ++;
+		check++;
 	}
-	if (( ret = send_msg(ctx) )) {
+
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_read() pass.");
 exit:
@@ -1877,20 +1978,21 @@ testcase_readv_client(struct ep_ctx *ctx, unsigned char pattern)
 	int ret = 0;
 	int j = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, pattern + j, ctx->lclmem.iov[j].iov_len);
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, pattern + j,
+		       ctx->lclmem.iov[j].iov_len);
 	}
-	if (( ret = prep_recv(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_readv() pass.");
 exit:
@@ -1902,27 +2004,30 @@ testcase_readv_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	unsigned char *check = NULL;
 	int i = 0, j = 0;
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		memset(ctx->lclmem.iov[j].iov_base, 0, ctx->lclmem.iov[j].iov_len);
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		memset(ctx->lclmem.iov[j].iov_base, 0,
+		       ctx->lclmem.iov[j].iov_len);
 	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_readv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
-	                ctx->lclmem.iov_count, 0, ctx->rmtmem.addr,
-	                ctx->rmtmem.key, cookie) )) {
+	ret = kfi_readv(ctx->ep, ctx->lclmem.iov, ctx->lclmem.descv,
+			ctx->lclmem.iov_count, 0, ctx->rmtmem.addr,
+			ctx->rmtmem.key, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -1934,31 +2039,32 @@ testcase_readv_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
 
-	for (j = 0; j < ctx->lclmem.iov_count; j ++) {
-		check = (unsigned char*)(ctx->lclmem.iov[j].iov_base);
-		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i ++) {
+	for (j = 0; j < ctx->lclmem.iov_count; j++) {
+		check = (unsigned char *)(ctx->lclmem.iov[j].iov_base);
+		for (i = 0; i < ctx->lclmem.iov[j].iov_len; i++) {
 			if (*check != pattern + j) {
-				LOG_ERR("Data mismatch at byte %d, received %u, expecting %u.",
-				        i, *check, pattern + j);
-				LOG_INFO("Sendign poison message to abort tests.");
+				LOG_ERR("Data mismatch");
+				LOG_ERR("\tbyte %d, received %u, expecting %u.",
+					i, *check, pattern + j);
+				LOG_INFO("Poison message to abort tests.");
 				(void)send_poison(ctx);
 				ret = -EIO;
 				goto exit;
 			}
-			check ++;
+			check++;
 		}
 	}
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_readv() pass.");
 exit:
@@ -1972,19 +2078,19 @@ testcase_atomic_client(struct ep_ctx *ctx, unsigned char pattern)
 	uint64_t *check = NULL;
 
 	memset(ctx->lclmem.iov[0].iov_base, 0, ctx->lclmem.iov[0].iov_len);
-	if (( ret = prep_recv(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	check = (uint64_t*)(ctx->lclmem.iov[0].iov_base);
+	check = (uint64_t *)(ctx->lclmem.iov[0].iov_base);
 	if (*check != (uint64_t)pattern) {
 		LOG_ERR("Atomic data mismatch, received %llu, expecting %llu.",
 			*check, (uint64_t)pattern);
@@ -1993,9 +2099,9 @@ testcase_atomic_client(struct ep_ctx *ctx, unsigned char pattern)
 		ret = -EIO;
 		goto exit;
 	}
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_atomic() pass.");
 exit:
@@ -2007,24 +2113,26 @@ testcase_atomic_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 
-	*(uint64_t* )ctx->lclmem.iov[0].iov_base = (uint64_t)pattern;
+	*(uint64_t *)ctx->lclmem.iov[0].iov_base = (uint64_t)pattern;
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_atomic(ctx->ep, (const void*)ctx->lclmem.iov[0].iov_base,
-	                1, ctx->lclmem.descv[0], 0, ctx->rmtmem.addr,
-	                ctx->rmtmem.key, KFI_UINT64, KFI_ATOMIC_WRITE,
-	                cookie) )) {
+	ret = kfi_atomic(ctx->ep, (const void *)ctx->lclmem.iov[0].iov_base,
+			 1, ctx->lclmem.descv[0], 0, ctx->rmtmem.addr,
+			 ctx->rmtmem.key, KFI_UINT64, KFI_ATOMIC_WRITE,
+			 cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -2036,23 +2144,24 @@ testcase_atomic_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
 	}
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	LOG_INFO("Testing API kfi_atomic() pass.");
 exit:
@@ -2066,17 +2175,17 @@ testcase_fetch_client(struct ep_ctx *ctx, unsigned char pattern)
 	int ret = 0;
 
 	*(uint64_t *)ctx->lclmem.iov[0].iov_base = (uint64_t)pattern;
-	if (( ret = prep_recv(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	check = (uint64_t *)(ctx->lclmem.iov[0].iov_base);
 	if (*check != (uint64_t)(pattern + pattern)) {
@@ -2088,9 +2197,10 @@ testcase_fetch_client(struct ep_ctx *ctx, unsigned char pattern)
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
+
 	LOG_INFO("Testing API kfi_fetch_atomic() pass.");
 exit:
 	return ret;
@@ -2101,26 +2211,30 @@ testcase_fetch_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	uint64_t *check = NULL;
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
-		goto exit;
-	}
 
-	*(uint64_t* )ctx->lclmem.iov[0].iov_base = 0;
-	*(uint64_t* )ctx->lclmem.iov[1].iov_base = 0;
+	ret = prep_recv(ctx);
+	if (ret)
+		goto exit;
+
+	*(uint64_t *)ctx->lclmem.iov[0].iov_base = 0;
+	*(uint64_t *)ctx->lclmem.iov[1].iov_base = 0;
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_fetch_atomic(ctx->ep,
-	                (const void*)ctx->lclmem.iov[0].iov_base, 1, ctx->lclmem.descv[0],
-	                ctx->lclmem.iov[1].iov_base, ctx->lclmem.descv[1], 0,
-	                ctx->rmtmem.addr, ctx->rmtmem.key,
-	                KFI_UINT64, KFI_ATOMIC_READ, cookie) )) {
+	ret = kfi_fetch_atomic(ctx->ep,
+			       (const void *)ctx->lclmem.iov[0].iov_base, 1,
+			       ctx->lclmem.descv[0],
+			       ctx->lclmem.iov[1].iov_base,
+			       ctx->lclmem.descv[1], 0,
+			       ctx->rmtmem.addr, ctx->rmtmem.key, KFI_UINT64,
+			       KFI_ATOMIC_READ, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -2132,9 +2246,9 @@ testcase_fetch_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -2149,14 +2263,17 @@ testcase_fetch_server(struct ep_ctx *ctx, unsigned char pattern)
 		goto exit;
 	}
 
-	*(uint64_t* )ctx->lclmem.iov[0].iov_base = (uint64_t)(pattern);
-	*(uint64_t* )ctx->lclmem.iov[1].iov_base = 0;
+	*(uint64_t *)ctx->lclmem.iov[0].iov_base = (uint64_t)(pattern);
+	*(uint64_t *)ctx->lclmem.iov[1].iov_base = 0;
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_fetch_atomic(ctx->ep,
-	                (const void*)ctx->lclmem.iov[0].iov_base, 1, ctx->lclmem.descv[0],
-	                ctx->lclmem.iov[1].iov_base, ctx->lclmem.descv[1], 0,
-	                ctx->rmtmem.addr, ctx->rmtmem.key,
-	                KFI_UINT64, KFI_SUM, cookie) )) {
+	ret = kfi_fetch_atomic(ctx->ep,
+			       (const void *)ctx->lclmem.iov[0].iov_base, 1,
+			       ctx->lclmem.descv[0],
+			       ctx->lclmem.iov[1].iov_base,
+			       ctx->lclmem.descv[1], 0,
+			       ctx->rmtmem.addr, ctx->rmtmem.key, KFI_UINT64,
+			       KFI_SUM, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -2168,9 +2285,9 @@ testcase_fetch_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -2184,16 +2301,18 @@ testcase_fetch_server(struct ep_ctx *ctx, unsigned char pattern)
 		ret = -EIO;
 		goto exit;
 	}
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
+
 	LOG_INFO("Testing API kfi_fetch_atomic() pass.");
 exit:
 	return ret;
@@ -2206,17 +2325,17 @@ testcase_compare_client(struct ep_ctx *ctx, unsigned char pattern)
 	int ret = 0;
 
 	*(uint64_t *)ctx->lclmem.iov[0].iov_base = (uint64_t)pattern;
-	if (( ret = prep_recv(ctx) )) {
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
 	check = (uint64_t *)(ctx->lclmem.iov[0].iov_base);
 	if (*check != (uint64_t)(pattern + 1)) {
@@ -2228,9 +2347,10 @@ testcase_compare_client(struct ep_ctx *ctx, unsigned char pattern)
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
+
 	LOG_INFO("Testing API kfi_compare_atomic() pass.");
 exit:
 	return ret;
@@ -2241,28 +2361,33 @@ testcase_compare_server(struct ep_ctx *ctx, unsigned char pattern)
 {
 	struct kfi_cq_data_entry wc = {};
 	struct kfi_cq_err_entry cq_err = {};
-	static void *cookie = NULL;
+	static void *cookie;
 	ssize_t rd = 0;
 	int ret = 0;
 	uint64_t *check = NULL;
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
-		goto exit;
-	}
 
-	*(uint64_t* )ctx->lclmem.iov[0].iov_base = (pattern + 1);
-	*(uint64_t* )ctx->lclmem.iov[1].iov_base = 0;
-	*(uint64_t* )ctx->lclmem.iov[2].iov_base = pattern; /* compare */
+	ret = prep_recv(ctx);
+	if (ret)
+		goto exit;
+
+	*(uint64_t *)ctx->lclmem.iov[0].iov_base = (pattern + 1);
+	*(uint64_t *)ctx->lclmem.iov[1].iov_base = 0;
+	*(uint64_t *)ctx->lclmem.iov[2].iov_base = pattern; /* compare */
 	get_random_bytes(&cookie, sizeof(cookie));
-	if (( ret = kfi_compare_atomic(ctx->ep,
-	                (const void*)ctx->lclmem.iov[0].iov_base, 1, ctx->lclmem.descv[0],
-	                ctx->lclmem.iov[2].iov_base, ctx->lclmem.descv[2],
-	                ctx->lclmem.iov[1].iov_base, ctx->lclmem.descv[1], 0,
-	                ctx->rmtmem.addr, ctx->rmtmem.key,
-	                KFI_UINT64, KFI_CSWAP, cookie) )) {
+	ret = kfi_compare_atomic(ctx->ep,
+				 (const void *)ctx->lclmem.iov[0].iov_base, 1,
+				 ctx->lclmem.descv[0],
+				 ctx->lclmem.iov[2].iov_base,
+				 ctx->lclmem.descv[2],
+				 ctx->lclmem.iov[1].iov_base,
+				 ctx->lclmem.descv[1], 0,
+				 ctx->rmtmem.addr, ctx->rmtmem.key, KFI_UINT64,
+				 KFI_CSWAP, cookie);
+	if (ret) {
 		LOG_ERR("Failed to post send descriptor.");
 		goto exit;
 	}
@@ -2274,9 +2399,9 @@ testcase_compare_server(struct ep_ctx *ctx, unsigned char pattern)
 			LOG_ERR("Failed to retrieve CQ error.");
 		} else {
 			LOG_ERR("CQ Error %s (%d).",
-			        kfi_cq_strerror(ctx->scq, cq_err.err,
-			                        cq_err.err_data, NULL, 0),
-			        cq_err.err);
+				kfi_cq_strerror(ctx->scq, cq_err.err,
+						cq_err.err_data, NULL, 0),
+				cq_err.err);
 		}
 		ret = -EIO;
 		goto exit;
@@ -2291,16 +2416,18 @@ testcase_compare_server(struct ep_ctx *ctx, unsigned char pattern)
 		goto exit;
 	}
 
-	if (( ret = send_msg(ctx) )) {
+	ret = send_msg(ctx);
+	if (ret)
 		goto exit;
-	}
 
-	if (( ret = recv_msg(ctx) )) {
+	ret = recv_msg(ctx);
+	if (ret)
 		goto exit;
-	}
-	if (( ret = prep_recv(ctx) )) {
+
+	ret = prep_recv(ctx);
+	if (ret)
 		goto exit;
-	}
+
 	LOG_INFO("Testing API kfi_compare_atomic() pass.");
 exit:
 	return ret;

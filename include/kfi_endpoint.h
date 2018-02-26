@@ -38,7 +38,11 @@
 
 
 struct kfi_msg {
-	const struct kvec	*msg_iov;
+	enum kfi_iov_type	type;
+	union {
+		const struct kvec	*msg_iov;
+		const struct bio_vec	*msg_biov;
+	};
 	void			**desc;
 	size_t			iov_count;
 	kfi_addr_t		addr;
@@ -54,6 +58,7 @@ enum {
 /* KFI_OPT_ENDPOINT option names */
 enum {
 	KFI_OPT_MIN_MULTI_RECV,		/* size_t */
+	KFI_OPT_CM_DATA_SIZE,		/* size_t */
 };
 
 struct kfi_ops_ep {
@@ -69,8 +74,6 @@ struct kfi_ops_ep {
 	int	(*rx_ctx)(struct kfid_ep *sep, int index,
 			struct kfi_rx_attr *attr, struct kfid_ep **rx_ep,
 			void *context);
-	ssize_t (*rx_size_left)(struct kfid_ep *ep);
-	ssize_t (*tx_size_left)(struct kfid_ep *ep);
 };
 
 struct kfi_ops_msg {
@@ -80,6 +83,9 @@ struct kfi_ops_msg {
 	ssize_t (*recvv)(struct kfid_ep *ep, const struct kvec *iov,
 			void **desc, size_t count, kfi_addr_t src_addr,
 			void *context);
+	ssize_t (*recvbv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  void *context);
 	ssize_t (*recvmsg)(struct kfid_ep *ep, const struct kfi_msg *msg,
 			uint64_t flags);
 	ssize_t (*send)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -87,6 +93,9 @@ struct kfi_ops_msg {
 	ssize_t (*sendv)(struct kfid_ep *ep, const struct kvec *iov,
 			void **desc, size_t count, kfi_addr_t dest_addr,
 			void *context);
+	ssize_t (*sendbv)(struct kfid_ep *ep, const struct bio_vec *biov,
+			  void **desc, size_t count, kfi_addr_t dest_addr,
+			  void *context);
 	ssize_t (*sendmsg)(struct kfid_ep *ep, const struct kfi_msg *msg,
 			uint64_t flags);
 	ssize_t	(*inject)(struct kfid_ep *ep, const void *buf, size_t len,
@@ -182,6 +191,7 @@ static inline int kfi_enable(struct kfid_ep *ep)
 static inline ssize_t kfi_cancel(struct kfid *fid, void *context)
 {
 	struct kfid_ep *ep = container_of(fid, struct kfid_ep, fid);
+
 	return ep->ops->cancel(fid, context);
 }
 
@@ -190,6 +200,7 @@ kfi_setopt(struct kfid *fid, int level, int optname, const void *optval,
 	   size_t optlen)
 {
 	struct kfid_ep *ep = container_of(fid, struct kfid_ep, fid);
+
 	return ep->ops->setopt(fid, level, optname, optval, optlen);
 }
 
@@ -198,7 +209,20 @@ kfi_getopt(struct kfid *fid, int level, int optname, void *optval,
 	   size_t *optlen)
 {
 	struct kfid_ep *ep = container_of(fid, struct kfid_ep, fid);
+
 	return ep->ops->getopt(fid, level, optname, optval, optlen);
+}
+
+static inline int kfi_ep_alias(struct kfid_ep *ep, struct kfid_ep **alias_ep,
+			       uint64_t flags)
+{
+	int ret;
+	struct kfid *fid;
+
+	ret = kfi_alias(&ep->fid, &fid, flags);
+	if (!ret)
+		*alias_ep = container_of(fid, struct kfid_ep, fid);
+	return ret;
 }
 
 static inline int
@@ -215,28 +239,16 @@ kfi_rx_context(struct kfid_ep *ep, int index, struct kfi_rx_attr *attr,
 	return ep->ops->rx_ctx(ep, index, attr, rx_ep, context);
 }
 
-static inline ssize_t
-kfi_rx_size_left(struct kfid_ep *ep)
-{
-	return ep->ops->rx_size_left(ep);
-}
-
-static inline ssize_t
-kfi_tx_size_left(struct kfid_ep *ep)
-{
-	return ep->ops->tx_size_left(ep);
-}
-
 static inline int
 kfi_stx_context(struct kfid_domain *domain, struct kfi_tx_attr *attr,
-	        struct kfid_stx **stx, void *context)
+		struct kfid_stx **stx, void *context)
 {
 	return domain->ops->stx_ctx(domain, attr, stx, context);
 }
 
 static inline int
 kfi_srx_context(struct kfid_domain *domain, struct kfi_rx_attr *attr,
-	        struct kfid_ep **rx_ep, void *context)
+		struct kfid_ep **rx_ep, void *context)
 {
 	return domain->ops->srx_ctx(domain, attr, rx_ep, context);
 }
@@ -253,6 +265,13 @@ kfi_recvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 	 size_t count, kfi_addr_t src_addr, void *context)
 {
 	return ep->msg->recvv(ep, iov, desc, count, src_addr, context);
+}
+
+static inline ssize_t
+kfi_recvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t src_addr, void *context)
+{
+	return ep->msg->recvbv(ep, biov, desc, count, src_addr, context);
 }
 
 static inline ssize_t
@@ -273,6 +292,13 @@ kfi_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 	  size_t count, kfi_addr_t dest_addr, void *context)
 {
 	return ep->msg->sendv(ep, iov, desc, count, dest_addr, context);
+}
+
+static inline ssize_t
+kfi_sendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t dest_addr, void *context)
+{
+	return ep->msg->sendbv(ep, biov, desc, count, dest_addr, context);
 }
 
 static inline ssize_t

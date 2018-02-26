@@ -53,14 +53,14 @@
 struct kfi_provider {
 	uint32_t version;
 	uint32_t kfi_version;
+	struct kfi_context context;
 	const char *name;
-	int (*kgetinfo)(uint32_t version,
-	                struct kfi_info *hints,
-	                struct kfi_info **info);
+	int (*kgetinfo)(uint32_t version, const char *node, const char *service,
+			uint64_t flags, struct kfi_info *hints,
+			struct kfi_info **info);
 	int (*kfabric)(struct kfi_fabric_attr *attr,
-	                struct kfid_fabric **fabric,
-	                void *context);
-	void (*kfreeinfo)(struct kfi_info *info);
+		       struct kfid_fabric **fabric,
+		       void *context);
 	void (*cleanup)(void);
 	struct completion comp;
 	atomic_t ref_cnt;
@@ -68,7 +68,7 @@ struct kfi_provider {
 
 /*
  * Each provider must register at least one provider instance to KFI framework.
- * Therefore fabric services of that provider can be found 
+ * Therefore fabric services of that provider can be found.
  */
 int kfi_provider_register(struct kfi_provider *provider);
 
@@ -96,22 +96,6 @@ kfi_deref_provider(struct kfi_provider *provider)
 };
 
 /*
- * Helper routine to allocate a kfi_info instance.
- */
-struct kfi_info *kfi_allocinfo(void);
-
-/*
- * Helper routine to duplicate a kfi_info instance.
- */
-struct kfi_info *kfi_dupinfo(const struct kfi_info *info);
-
-/*
- * Helper routine to recycle a kfi_info instance. Instances returned to clients
- * in kfi_getinfo() should be recycled by clients through kfi_freeinfo().
- */
-void kfi_deallocinfo(const struct kfi_info *info);
-
-/*
  * Each KFI object should initialize its reference count through kfi_init_id()
  * immediately after the ID is allocated.
  */
@@ -122,7 +106,7 @@ static inline void kfi_init_id(struct kfid *fid)
 };
 
 /*
- * Each KFI object should be referneced / dereferenced when a provider routine
+ * Each KFI object should be referenced / dereferenced when a provider routine
  * accesses the object, or another KFI object obatains / releases a reference
  * to that object.
  */
