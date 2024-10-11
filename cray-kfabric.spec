@@ -29,7 +29,7 @@
 %endif
 
 Name:       cray-kfabric
-Version:    0.1.0
+Version:    1.0.0
 Release:    %(echo ${BUILD_METADATA})
 Summary:    Kfabric API
 License:    GPL-2.0-only OR BSD-2-Clause
