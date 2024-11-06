@@ -10,7 +10,7 @@ cxi_test_setup() {
 	modprobe iommu_v2 || modprobe amd_iommu_v2
 
 	test_expect_success "One device is present" "
-		[ $(lspci | grep -c 'Cray Inc Device 0501') -eq 1 ]
+		[ $(lspci -n | grep -c -e '17db:0501' -e '1590:0371') -eq 1 ]
 	"
 
 	dmesg --clear
