@@ -8,11 +8,10 @@
 %define distro_kernel_package_name %{name}-kmp
 %endif
 
-
 # Exclude -preempt kernel flavor, this seems to get built alongside the -default
 # flavor for stock SLES. It doesn't get used, and its presence can cause issues
 # (see NETCASSINI-4032)
-%define kmp_args_common -x preempt -p %{_sourcedir}/%name.rpm_preamble
+%define kmp_args_common -x azure preempt -p %{_sourcedir}/%name.rpm_preamble
 
 %if 0%{?rhel}
 # On RHEL, override the kmod RPM name to include the kernel version it was built
@@ -55,7 +54,16 @@ Provides:       kmod-%%{name} = %%version-%%release \n\
 Requires:       cray-cxi-driver-kmp-%1 \n\
 %endif" > %{_sourcedir}/%{name}.rpm_preamble)
 
+%if 0%{with shasta_premium}
+# The nvidia-gpu-build-obs package (necessary for building against CUDA
+# drivers) causes a bogus default kernel flavor to be added. This causes
+# builds to fail, as upstream dependencies (i.e. SBL) are not built for
+# default on shasta-premium. Work around this by explicitly excluding the
+# default flavor on shasta-premium
+%kernel_module_package -x 64kb default %kmp_args
+%else
 %kernel_module_package %kmp_args
+%endif
 
 %description
 Kfabric API
