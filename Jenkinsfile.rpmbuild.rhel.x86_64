@@ -6,7 +6,7 @@ rpmBuild(
     target_node: "ncn",
     buildPrepScript: "runBuildPrep.basekernel.sh",
     rpmBuildCmd: "rpm_build_multikernel.sh _arch=\$arch _buildname=\$buildname _os=\$os",
-    fanout_params: ["rhel_8_10", "rhel_9_4"],
+    fanout_params: ["rhel_8_10", "rhel_9_4", "rhel_9_5"],
     build_arch: "x86_64",
     masterBranch: "integration",
     recv_triggers: ["cxi-driver-centos-built"],
