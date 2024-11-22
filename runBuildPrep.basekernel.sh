@@ -37,6 +37,7 @@ else
     ARTI_BRANCH=dev/master
 fi
 
+
 cat >> vars.sh <<- END
 ARTI_URL=${ARTI_URL:-"https://${ARTIFACT_REPO_HOST}/artifactory"}
 ARTI_LOCATION=${ARTI_LOCATION:-"rpm-master-local"}
