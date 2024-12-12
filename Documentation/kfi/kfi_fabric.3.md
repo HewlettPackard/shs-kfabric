@@ -141,6 +141,7 @@ struct kfi_fabric_attr {
 	char			*name;
 	char			*prov_name;
 	uint32_t		prov_version;
+	uint32_t		api_version;
 };
 {% endhighlight %}
 
@@ -163,6 +164,12 @@ The name of the underlying fabric provider.
 ## prov_version
 
 Version information for the fabric provider.
+
+## api_version
+
+The interface version requested by the application. This value
+corresponds to the version parameter passed into
+[`kfi_getinfo`(3)](kfi_getinfo.3.html).
 
 # RETURN VALUE
 

@@ -3,6 +3,7 @@
  * Copyright (c) 2006-2015 Cisco Systems, Inc.  All rights reserved.
  * Copyright (c) 2013 Intel Corporation. All rights reserved.
  * Copyright (c) 2015 NetApp, Inc.  All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -105,6 +106,13 @@ kfi_getinfo(uint32_t version, const char *node, const char *service,
 	int ret = -ENODATA;
 	*info = NULL;
 
+	if (KFI_VERSION_LT(kfi_version(), version)) {
+		LOG_ERR("kfi_getinfo: Requested KFI version %d.%d is newer than current KFI version %d.%d.",
+			KFI_MAJOR(version), KFI_MINOR(version),
+			KFI_MAJOR_VERSION, KFI_MINOR_VERSION);
+		return -ENOSYS;
+	}
+
 	if (hints && hints->fabric_attr && hints->fabric_attr->prov_name)
 		hints_name = hints->fabric_attr->prov_name;
 
@@ -141,6 +149,7 @@ kfi_getinfo(uint32_t version, const char *node, const char *service,
 				attr->prov_name = kstrdup(provider->name,
 							  GFP_KERNEL);
 				attr->prov_version = provider->version;
+				attr->api_version = provider->kfi_version;
 			}
 		}
 	}

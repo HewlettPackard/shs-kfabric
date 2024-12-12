@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2016 Intel Corporation. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -41,7 +42,7 @@
 	typedef struct name##_s *name
 
 #define KFI_MAJOR_VERSION 1
-#define KFI_MINOR_VERSION 5
+#define KFI_MINOR_VERSION 6
 
 enum {
 	KFI_PATH_MAX		= 256,
@@ -56,6 +57,9 @@ enum {
 	((KFI_MAJOR(v1) > KFI_MAJOR(v2)) || \
 	 (KFI_MAJOR(v1) == KFI_MAJOR(v2) && KFI_MINOR(v1) == KFI_MINOR(v2)) || \
 	 (KFI_MAJOR(v1) == KFI_MAJOR(v2) && KFI_MINOR(v1) > KFI_MINOR(v2)))
+#define KFI_VERSION_LT(v1, v2) \
+	((KFI_MAJOR(v1) < KFI_MAJOR(v2)) || \
+	 (KFI_MAJOR(v1) == KFI_MAJOR(v2) && KFI_MINOR(v1) < KFI_MINOR(v2)))
 
 #ifndef UINT64_MAX
 #define UINT64_MAX (~0UL)
@@ -346,6 +350,7 @@ struct kfi_fabric_attr {
 	char			*name;
 	char			*prov_name;
 	uint32_t		prov_version;
+	uint32_t		api_version;
 };
 
 struct kfi_info {
@@ -445,6 +450,7 @@ struct kfi_ops_fabric {
 struct kfid_fabric {
 	struct kfid		fid;
 	struct kfi_ops_fabric	*ops;
+	uint32_t		api_version;
 };
 
 int kfi_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
