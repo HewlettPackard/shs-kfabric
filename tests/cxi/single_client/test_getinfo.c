@@ -1,6 +1,6 @@
 /*
  * Kfabric getinfo tests.
- * Copyright 2018-2022 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -79,7 +79,7 @@ static int kfi_getinfo_failure(uint32_t version, const char *node,
 
 	rc = kfi_getinfo(version, node, service, flags, hints, info);
 	if (!rc) {
-		LOG_ERR("kfi_getinfo() did not return 0");
+		LOG_ERR("kfi_getinfo() did not fail");
 		return -EINVAL;
 	}
 
@@ -2099,6 +2099,121 @@ static int test_basic_getinfo4(int id)
 }
 
 /*
+ * This test should return a valid info structure by a NULL
+ * KFI version, a NULL node and NULL service.
+ */
+static int test_version_null(int id)
+{
+	int rc = 0;
+	struct kfi_info *info = NULL;
+	uint32_t version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION);
+
+	rc = kfi_getinfo_success(0, NULL, NULL, 0, NULL, &info);
+	if (rc) {
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	if (info->fabric_attr->api_version != version) {
+		rc = -EINVAL;
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+	LOG_INFO("API Version: %x", info->fabric_attr->api_version);
+
+fail:
+	if (info)
+		kfi_freeinfo(info);
+	return rc;
+}
+
+/*
+ * This test should return a valid info structure by the current
+ * KFI version, a NULL node and NULL service.
+ */
+static int test_version_current(int id)
+{
+	int rc = 0;
+	struct kfi_info *info = NULL;
+	uint32_t version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION);
+
+	rc = kfi_getinfo_success(version, NULL, NULL, 0, NULL, &info);
+	if (rc) {
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	if (info->fabric_attr->api_version != version) {
+		rc = -EINVAL;
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+	LOG_INFO("API Version: %x", info->fabric_attr->api_version);
+
+fail:
+	if (info)
+		kfi_freeinfo(info);
+	return rc;
+}
+
+/*
+ * This test should return a valid info structure by a recent
+ * KFI version, a NULL node and NULL service.
+ */
+static int test_version_previous(int id)
+{
+	int rc = 0;
+	struct kfi_info *info = NULL;
+	uint32_t version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION - 1);
+	uint32_t output_version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION);
+
+	rc = kfi_getinfo_success(version, NULL, NULL, 0, NULL, &info);
+	if (rc) {
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	if (info->fabric_attr->api_version != output_version) {
+		rc = -EINVAL;
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		goto fail;
+	}
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+	LOG_INFO("API Version: %x", info->fabric_attr->api_version);
+
+fail:
+	if (info)
+		kfi_freeinfo(info);
+	return rc;
+}
+
+/*
+ * This test should return an error with a newer KFI version.
+ */
+static int test_version_newer(int id)
+{
+	int rc = 0;
+	struct kfi_info *info = NULL;
+
+	rc = kfi_getinfo_failure(KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION + 1),
+			NULL, NULL, 0, NULL, &info);
+	if (rc) {
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+	} else {
+		LOG_INFO("TEST %d PASSED: %s", id, __func__);
+	}
+
+	if (info)
+		kfi_freeinfo(info);
+	return rc;
+}
+
+/*
  * Valid source IPv4 address.
  */
 static int test_valid_ipv4_source(int id)
@@ -2328,6 +2443,26 @@ static int __init test_module_init(void)
 	test_id++;
 
 	rc = test_basic_getinfo4(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_version_null(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_version_current(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_version_previous(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_version_newer(test_id);
 	if (rc)
 		exit_rc = rc;
 	test_id++;

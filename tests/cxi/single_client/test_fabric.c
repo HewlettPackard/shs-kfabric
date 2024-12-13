@@ -89,6 +89,16 @@ static int test_basic_fabric_kfilnd_hints(int id)
 		goto out;
 	}
 
+	if (info->fabric_attr->api_version != fabric->api_version) {
+		rc = -EINVAL;
+		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
+		LOG_ERR("Failed to set fabric api_version");
+		goto out;
+	}
+
+	LOG_INFO("kfi_fabric_attr API Version: %x", info->fabric_attr->api_version);
+	LOG_INFO("kfid_fabric API Version: %x", fabric->api_version);
+
 	rc = kfi_close(&fabric->fid);
 	if (rc) {
 		LOG_ERR("TEST %d FAILED: %s %d", id, __func__, __LINE__);
