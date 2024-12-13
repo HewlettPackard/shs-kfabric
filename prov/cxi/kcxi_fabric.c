@@ -1,6 +1,6 @@
 /*
  * Cray kfabric CXI provider fabric.
- * Copyright 2018-2022 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -604,9 +604,6 @@ int kcxi_getinfo(uint32_t version, const char *node, const char *service,
 	int index;
 	unsigned int nic;
 
-	if (version && version != KCXI_PROV_API_VERSION)
-		goto nomatch;
-
 	rc = kcxi_dev_first_nic();
 	if (rc < 0) {
 		LOG_ERR("No kCXI devices found");
@@ -803,6 +800,7 @@ int kcxi_fabric(struct kfi_fabric_attr *attr, struct kfid_fabric **fabric,
 	kcxi_fab->fab_fid.fid.context = context;
 	kcxi_fab->fab_fid.fid.ops = &cxi_fabric_fid_ops;
 	kcxi_fab->fab_fid.ops = &cxi_fabric_ops;
+	kcxi_fab->fab_fid.api_version = attr->api_version;
 
 	/*
 	 * Take a reference against the current module to prevent it from being

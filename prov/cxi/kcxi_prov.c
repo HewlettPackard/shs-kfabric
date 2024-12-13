@@ -1,6 +1,6 @@
 /*
  * Cray kfabric CXI provider.
- * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -43,7 +43,7 @@ struct dentry *kcxi_debugfs_dir;
 static struct kfi_provider cxi_prov = {
 	.name = KCXI_PROV_NAME,
 	.version = KCXI_PROV_VERSION,
-	.kfi_version = KFI_VERSION(KFI_MAJOR_VERSION, KFI_MINOR_VERSION),
+	.kfi_version = KCXI_PROV_API_VERSION,
 	.kgetinfo = kcxi_getinfo,
 	.kfabric = kcxi_fabric,
 };
