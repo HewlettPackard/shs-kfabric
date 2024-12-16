@@ -9,16 +9,17 @@ tagline: kfabric Programmer's Manual
 
 kfi_msg - Message data transfer operations
 
-kfi_recv / kfi_recvv / kfi_recvmsg
+kfi_recv / kfi_recvv / kfi_revbv / kfi_recvsgl / kfi_recvmsg
 :   Post a buffer to receive an incoming message
 
-kfi_send / kfi_sendv / kfi_sendmsg
+kfi_send / kfi_sendv / kfi_sendbv / kfi_sendsgl / kfi_sendmsg /
 kfi_inject / kfi_senddata
 :   Initiate an operation to send a message
 
 # SYNOPSIS
 
-{% highlight c %}
+```C
+
 #include <kfi_endpoint.h>
 
 ssize_t
@@ -27,6 +28,14 @@ kfi_recv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 
 ssize_t
 kfi_recvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
+	 size_t count, kfi_addr_t src_addr, void *context)
+
+ssize_t
+kfi_recvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	 size_t count, kfi_addr_t src_addr, void *context)
+
+ssize_t
+kfi_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
 	 size_t count, kfi_addr_t src_addr, void *context)
 
 ssize_t
@@ -41,6 +50,14 @@ kfi_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 	  size_t count, kfi_addr_t dest_addr, void *context)
 
 ssize_t
+kfi_sendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	  size_t count, kfi_addr_t dest_addr, void *context)
+
+ssize_t
+kfi_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	  size_t count, kfi_addr_t dest_addr, void *context)
+
+ssize_t
 kfi_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags)
 
 ssize_t
@@ -50,7 +67,8 @@ kfi_inject(struct kfid_ep *ep, const void *buf, size_t len,
 ssize_t
 kfi_senddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 	     uint64_t data, kfi_addr_t dest_addr, void *context)
-{% endhighlight %}
+
+```
 
 # ARGUMENTS
 
@@ -64,7 +82,7 @@ kfi_senddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 : Length of data buffer to send or receive, specified in bytes.  Valid
   transfers are from 0 bytes up to the endpoint's max_msg_size.
 
-*iov*
+*iov / biov / sgl*
 : Vectored data buffer.
 
 *count*
@@ -97,8 +115,8 @@ kfi_senddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 
 # DESCRIPTION
 
-The send functions -- kfi_send, kfi_sendv, kfi_sendmsg,
-kfi_inject, and kfi_senddata -- are used to
+The send functions -- kfi_send, kfi_sendv kfi_sendbv, kgi_sendsgl,
+kfi_sendmsg, kfi_inject, and kfi_senddata -- are used to
 transmit a message from one endpoint to another endpoint.  The main
 difference between send functions are the number and type of
 parameters that they accept as input.  Otherwise, they perform the
@@ -106,9 +124,9 @@ same general function.  Messages sent using kfi_msg operations are
 received by a remote endpoint into a buffer posted to receive such
 messages.
 
-The receive functions -- kfi_recv, kfi_recvv, kfi_recvmsg --
-post a data buffer to an endpoint to receive inbound messages.
-Similar to the send operations, receive operations operate
+The receive functions -- kfi_recv, kfi_recvv, kfi_recvbv, kfi_recvsgl,
+kfi_recvmsg -- post a data buffer to an endpoint to receive inbound
+messages.  Similar to the send operations, receive operations operate
 asynchronously.  Users should not touch the posted data buffer(s)
 until the receive operation has completed.
 
@@ -128,26 +146,29 @@ configured differently, the data buffer passed into kfi_send must not
 be touched by the application until the kfi_send call completes
 asynchronously.
 
-## kfi_sendv
+## kfi_sendv / kfi_sendbv / kfi_sendsgl
 
-The kfi_sendv call adds support for a scatter-gather list to kfi_send.
-The kfi_sendv transfers the set of data buffers
-referenced by the iov parameter to a remote endpoint as a single
-message.
+The kfi_sendv, kfi_sendbv and kfi_sendsgl calls add support for a
+scatter-gather list to kfi_send.  The calls transfer the set of data
+buffers referenced by the iov, biov or sgl parameter to a remote endpoint
+as a single message.  The kfi_sendsgl call requires the scatterlist to
+be DMA mapped.
 
 ## kfi_sendmsg
 
 The kfi_sendmsg call supports data transfers over both connected and
 unconnected endpoints, with the ability to control the send operation
 per call through the use of flags.  The kfi_sendmsg function takes a
-`struct kfi_msg` as input.
+`struct kfi_msg` as input.  The `msg_sgl` scatterlist must be DMA mapped.
 
-{% highlight c %}
+```C
+
 struct kfi_msg {
 	enum kfi_iov_type	type;
 	union {
 		const struct kvec	*msg_iov;
 		const struct bio_vec	*msg_biov;
+		const struct scatterlist	*msg_sgl;
 	};
 	void			**desc;
 	size_t			iov_count;
@@ -155,7 +176,8 @@ struct kfi_msg {
 	void			*context;
 	uint64_t		data;
 };
-{% endhighlight %}
+
+```
 
 ## kfi_inject
 
@@ -184,18 +206,20 @@ the endpoint type and protocol.  For unconnected endpoints, the
 src_addr parameter can be used to indicate that a buffer should be
 posted to receive incoming data from a specific remote endpoint.
 
-## kfi_recvv
+## kfi_recvv / kfi_recvbv / kfi_recvsgl
 
-The kfi_recvv call adds support for a scatter-gather list to kfi_recv.
-The kfi_recvv posts the set of data buffers referenced by the iov
-parameter to a receive incoming data.
+The kfi_recvv, kfi_recvbv and kfi_recvsgl calls add support for a
+scatter-gather list to kfi_recv.  The calls posts the set of data
+buffers referenced by the iov, biov or sgl parameter to receive incoming
+data.  The kfi_recvsgl call requires the scatterlist to be DMA mapped.
 
 ## kfi_recvmsg
 
 The kfi_recvmsg call supports posting buffers over both connected and
 unconnected endpoints, with the ability to control the receive
 operation per call through the use of flags.  The kfi_recvmsg function
-takes a struct kfi_msg as input.
+takes a struct kfi_msg as input.  The `msg_sgl` scatterlist must be DMA
+mapped.
 
 # FLAGS
 
@@ -263,6 +287,9 @@ errno is returned. Kfabric errno values are defined in
   or processing queues are full.  The operation may be retried after
   additional provider resources become available, usually through the
   completion of currently outstanding operations.
+
+*-KFI_EINVAL*
+: Indicates that an invalid argument was supplied by the user.
 
 # SEE ALSO
 

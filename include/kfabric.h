@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016 Intel Corporation. All rights reserved.
- * Copyright 2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -42,7 +42,7 @@
 	typedef struct name##_s *name
 
 #define KFI_MAJOR_VERSION 1
-#define KFI_MINOR_VERSION 6
+#define KFI_MINOR_VERSION 7
 
 enum {
 	KFI_PATH_MAX		= 256,
@@ -241,6 +241,7 @@ enum {
 enum kfi_iov_type {
 	KFI_KVEC = 1,
 	KFI_BVEC,
+	KFI_SGL,
 };
 
 enum {

@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation. All rights reserved.
  * Copyright (c) 2015 NetApp, Inc.  All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -414,6 +415,7 @@ kfi_no_query_atomic(struct kfid_domain *domain, enum kfi_datatype datatype,
  *	.reg = kfi_no_mr_reg,
  *	.regv = kfi_no_mr_regv,
  *	.regbv = kfi_no_mr_regbv,
+ *	.regsgl = kfi_no_mr_regsgl,
  *	.regattr = kfi_no_mr_regattr,
  * };
  */
@@ -436,6 +438,14 @@ kfi_no_mr_regv(struct kfid *fid, const struct kvec *iov, size_t count,
 
 static inline int
 kfi_no_mr_regbv(struct kfid *fid, const struct bio_vec *biov, size_t count,
+		uint64_t access, uint64_t offset, uint64_t requested_key,
+		uint64_t flags, struct kfid_mr **mr, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline int
+kfi_no_mr_regsgl(struct kfid *fid, const struct scatterlist *sgl, size_t count,
 		uint64_t access, uint64_t offset, uint64_t requested_key,
 		uint64_t flags, struct kfid_mr **mr, void *context)
 {
@@ -513,10 +523,12 @@ kfi_no_tx_size_left(struct kfid_ep *ep)
  *	.recv = kfi_no_msg_recv,
  *	.recvv = kfi_no_msg_recvv,
  *	.recvbv = kfi_no_msg_recvbv,
+ *	.recvsgl = kfi_no_msg_recvsgl,
  *	.recvmsg = kfi_no_msg_recvmsg,
  *	.send = kfi_no_msg_send,
  *	.sendv = kfi_no_msg_sendv,
  *	.sendbv = kfi_no_msg_sendbv,
+ *	.sendsgl = kfi_no_msg_sendsgl,
  *	.sendmsg = kfi_no_msg_sendmsg,
  *	.inject = kfi_no_msg_inject,
  *	.senddata = kfi_no_msg_senddata,
@@ -546,6 +558,13 @@ kfi_no_msg_recvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 }
 
 static inline ssize_t
+kfi_no_msg_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+		  size_t count, kfi_addr_t src_addr, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
 kfi_no_msg_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
 		   uint64_t flags)
 {
@@ -568,6 +587,13 @@ kfi_no_msg_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 static inline ssize_t
 kfi_no_msg_sendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+		  size_t count, kfi_addr_t dest_addr, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
+kfi_no_msg_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
 		  size_t count, kfi_addr_t dest_addr, void *context)
 {
 	return -ENOSYS;
@@ -672,10 +698,12 @@ kfi_no_cq_signal(struct kfid_cq *cq)
  *	.read = kfi_no_rma_read,
  *	.readv = kfi_no_rma_readv,
  *	.readbv = kfi_no_rma_readbv,
+ *	.readsgl = kfi_no_rma_readsgl,
  *	.readmsg = kfi_no_rma_readmsg,
  *	.write = kfi_no_rma_write,
  *	.writev = kfi_no_rma_writev,
  *	.writebv = kfi_no_rma_writebv,
+ *	.writesgl = kfi_no_rma_writesgl
  *	.writemsg = kfi_no_rma_writemsg,
  *	.inject = kfi_no_rma_inject,
  *	.writedata = kfi_no_rma_writedata,
@@ -700,6 +728,14 @@ kfi_no_rma_readv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 static inline ssize_t
 kfi_no_rma_readbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+		  size_t count, kfi_addr_t src_addr, uint64_t addr,
+		  uint64_t key, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
+kfi_no_rma_readsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
 		  size_t count, kfi_addr_t src_addr, uint64_t addr,
 		  uint64_t key, void *context)
 {
@@ -733,6 +769,14 @@ static inline ssize_t
 kfi_no_rma_writebv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 		   size_t count, kfi_addr_t dest_addr, uint64_t addr,
 		   uint64_t key, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
+kfi_no_rma_writesgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+		  size_t count, kfi_addr_t dest_addr, uint64_t addr,
+		  uint64_t key, void *context)
 {
 	return -ENOSYS;
 }
@@ -773,10 +817,12 @@ kfi_no_rma_injectdata(struct kfid_ep *ep, const void *buf, size_t len,
  *	.recv = kfi_no_tagged_recv,
  *	.recvv = kfi_no_tagged_recvv,
  *	.recvbv = kfi_no_tagged_recvbv,
+ *	.recvsgl = kfi_no_tagged_recvsgl,
  *	.recvmsg = kfi_no_tagged_recvmsg,
  *	.send = kfi_no_tagged_send,
  *	.sendv = kfi_no_tagged_sendv,
  *	.sendbv = kfi_no_tagged_sendbv,
+ *	.sendsgl = kfi_no_tagged_sendsgl,
  *	.sendmsg = kfi_no_tagged_sendmsg,
  *	.inject = kfi_no_tagged_inject,
  *	.senddata = kfi_no_tagged_senddata,
@@ -809,6 +855,14 @@ kfi_no_tagged_recvbv(struct kfid_ep *ep, const struct bio_vec *biov,
 }
 
 static inline ssize_t
+kfi_no_tagged_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+		     void **desc, size_t count, kfi_addr_t src_addr,
+		     uint64_t tag, uint64_t ignore, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
 kfi_no_tagged_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 		      uint64_t flags)
 {
@@ -832,6 +886,14 @@ kfi_no_tagged_sendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 static inline ssize_t
 kfi_no_tagged_sendbv(struct kfid_ep *ep, const struct bio_vec *biov,
+		     void **desc, size_t count, kfi_addr_t dest_addr,
+		     uint64_t tag, void *context)
+{
+	return -ENOSYS;
+}
+
+static inline ssize_t
+kfi_no_tagged_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
 		     void **desc, size_t count, kfi_addr_t dest_addr,
 		     uint64_t tag, void *context)
 {

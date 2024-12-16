@@ -9,7 +9,7 @@ tagline: kfabric Programmer's Manual
 
 kfi_mr \- Memory region operations
 
-kfi_mr_reg / kfi_mr_regv / kfi_mr_regattr
+kfi_mr_reg / kfi_mr_regv / kfi_mr_regbv / kfi_mr_sgl / kfi_mr_regattr
 : Register local memory buffers for direct fabric access
 
 kfi_close
@@ -26,7 +26,8 @@ kfi_mr_bind
 
 # SYNOPSIS
 
-{% highlight c %}
+```C
+
 #include <kfi_domain.h>
 
 int
@@ -35,13 +36,23 @@ kfi_mr_reg(struct kfid_domain *domain, const void *buf, size_t len,
 	   uint64_t flags, struct kfid_mr **mr, void *context)
 
 int
-kfi_mr_regv(struct kfid_domain *domain, const struct kvec *iov, size_t count,
-	    uint64_t access, uint64_t offset, uint64_t requested_key,
+kfi_mr_regv(struct kfid_domain *domain, const struct kvec *iov,
+	    size_t count, uint64_t access, uint64_t offset, uint64_t requested_key,
+	    uint64_t flags, struct kfid_mr **mr, void *context)
+
+int
+kfi_mr_regbv(struct kfid_domain *domain, const struct bio_vec *biov,
+	    size_t count, uint64_t access, uint64_t offset, uint64_t requested_key,
+	    uint64_t flags, struct kfid_mr **mr, void *context)
+
+int
+kfi_mr_regsgl(struct kfid_domain *domain, const struct scatterlist *sgl,
+	    size_t count, uint64_t access, uint64_t offset, uint64_t requested_key,
 	    uint64_t flags, struct kfid_mr **mr, void *context)
 
 int
 kfi_mr_regattr(struct kfid_domain *domain, const struct kfi_mr_attr *attr,
-	       uint64_t flags, struct kfid_mr **mr)
+	    uint64_t flags, struct kfid_mr **mr)
 
 int
 kfi_close(struct kfid *fid)
@@ -54,9 +65,9 @@ kfi_mr_key(struct kfid_mr *mr)
 
 int
 kfi_mr_bind(struct kfid_mr *mr, struct kfid *bfid,
-			      uint64_t flags)
+	    uint64_t flags)
 
-{% endhighlight %}
+```
 
 # ARGUMENTS
 
@@ -78,7 +89,7 @@ kfi_mr_bind(struct kfid_mr *mr, struct kfid *bfid,
 *len*
 : Length of memory buffer to register
 
-*iov*
+*iov / biov / sgl*
 : Vectored memory buffer.
 
 *count*
@@ -127,11 +138,11 @@ data buffers before using them for local operations (e.g. send and
 receive data buffers), and the mem_desc parameter into data transfer
 operations is ignored.
 
-The registrations functions -- kfi_mr_reg, kfi_mr_regv, and
-kfi_mr_regattr -- are used to register one or more memory buffers with
-fabric resources.  The main difference between registration functions
-are the number and type of parameters that they accept as input.
-Otherwise, they perform the same general function.
+The registrations functions -- kfi_mr_reg, kfi_mr_regv, kfi_mr_regbv,
+kfi_mr_regsgl and kfi_mr_regattr -- are used to register one or more
+memory buffers with fabric resources.  The main difference between
+registration functions are the number and type of parameters that they
+accept as input.  Otherwise, they perform the same general function.
 
 By default, memory registration completes synchronously.  I.e. the
 registration call will not return until the registration has
@@ -193,24 +204,27 @@ must remain valid until the registration operation completes.  The
 context specified with the registration request is returned with the
 completion event.
 
-## kfi_mr_regv
+## kfi_mr_regv / kfi_mr_regbv / kfi_mr_regsgl
 
-The kfi_mr_regv call adds support for a scatter-gather list to
-kfi_mr_reg.  Multiple memory buffers are registered as a single memory
-region.  Otherwise, the operation is the same.
+The kfi_mr_reg, kfi_mr_regbv and kfi_mr_regsgl calls add support for
+a scatter-gather list to kfi_mr_reg.  Multiple memory buffers are
+registered as a single memory region.  Otherwise, the operation is the
+same.  The kfi_mr_regsgl call requires the scatterlist to be DMA mapped.
 
 ## kfi_mr_regattr
 
 The kfi_mr_regattr call is a more generic, extensible registration call
 that allows the user to specify the registration request using a
-struct kfi_mr_attr.
+struct kfi_mr_attr.  The `mr_sgl` scatterlist must be DMA mapped.
 
-{% highlight c %}
+```C
+
 struct kfi_mr_attr {
 	enum kfi_iov_type	type;
 	union {
 		const struct kvec	*mr_iov;
 		const struct bio_vec	*mr_biov;
+		const struct scatterlist	*mr_sgl;
 	};
 	size_t			iov_count;
 	uint64_t		access;
@@ -220,7 +234,8 @@ struct kfi_mr_attr {
 	size_t			auth_key_size;
 	uint8_t			*auth_key;
 };
-{% endhighlight %}
+
+```
 
 ## kfi_close
 
@@ -274,6 +289,9 @@ Kfabric errno values are defined in
 
 *-KFI_EBADFLAGS*
 : Returned if the specified flags are not supported by the provider.
+
+*-KFI_EINVAL*
+: Indicates that an invalid argument was supplied by the user.
 
 # SEE ALSO
 

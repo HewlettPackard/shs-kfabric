@@ -9,10 +9,10 @@ tagline: kfabric Programmer's Manual
 
 kfi_tagged \- Tagged data transfer operations
 
-kfi_trecv / kfi_trecvv / kfi_trecvmsg
+kfi_trecv / kfi_trecvv /kfi_trecvbv / kfi_trecvsgl / kfi_trecvmsg
 :   Post a buffer to receive an incoming message
 
-kfi_tsend / kfi_tsendv / kfi_tsendmsg
+kfi_tsend / kfi_tsendv / kfi_sendbv / kfi_sendsgl / kfi_tsendmsg /
 kfi_tinject / kfi_tsenddata
 :   Initiate an operation to send a message
 
@@ -21,7 +21,8 @@ kfi_tsearch
 
 # SYNOPSIS
 
-{% highlight c %}
+```C
+
 #include <kfi_tagged.h>
 
 ssize_t
@@ -30,6 +31,16 @@ kfi_trecv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 
 ssize_t
 kfi_trecvv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
+	   size_t count, kfi_addr_t src_addr, uint64_t tag, uint64_t ignore,
+	   void *context)
+
+ssize_t
+kfi_trecvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t src_addr, uint64_t tag, uint64_t ignore,
+	   void *context)
+
+ssize_t
+kfi_trecvsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
 	   size_t count, kfi_addr_t src_addr, uint64_t tag, uint64_t ignore,
 	   void *context)
 
@@ -46,6 +57,14 @@ kfi_tsendv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 	   size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
 
 ssize_t
+kfi_tsendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
+
+ssize_t
+kfi_tsendsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	   size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
+
+ssize_t
 kfi_tsendmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 	     uint64_t flags)
 
@@ -57,7 +76,7 @@ ssize_t
 kfi_tsenddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 	      uint64_t data, kfi_addr_t dest_addr, uint64_t tag, void *context)
 
-{% endhighlight %}
+```
 
 # ARGUMENTS
 
@@ -70,7 +89,7 @@ kfi_tsenddata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 *len*
 : Length of data buffer to send or receive.
 
-*iov*
+*iov / biov / sgl*
 : Vectored data buffer.
 
 *count*
@@ -115,24 +134,26 @@ the incoming message with a corresponding receive buffer.  Message
 tags match when the receive buffer tag is the same as the send buffer
 tag with the ignored bits masked out.  This can be stated as:
 
-{% highlight c %}
+```C
+
 send_tag & ~ignore == recv_tag & ~ignore
-{% endhighlight %}
+
+```
 
 In general, message tags are checked against receive buffers in the
 order in which messages have been posted to the endpoint.  See the
 ordering discussion below for more details.
 
-The send functions -- kfi_tsend, kfi_tsendv, kfi_tsendmsg,
-kfi_tinject, and kfi_tsenddata -- are used
+The send functions -- kfi_tsend, kfi_tsendv, kfi_tsendbv, kfi_tsendsgl,
+kfi_tsendmsg, kfi_tinject, and kfi_tsenddata -- are used
 to transmit a tagged message from one endpoint to another endpoint.
 The main difference between send functions are the number and type of
 parameters that they accept as input.  Otherwise, they perform the
 same general function.
 
-The receive functions -- kfi_trecv, kfi_trecvv, kfi_recvmsg
--- post a data buffer to an endpoint to receive inbound tagged
-messages.  Similar to the send operations, receive operations operate
+The receive functions -- kfi_trecv, kfi_trecvv, kfi_trecvbv, kfi_trecvsgl,
+and kfi_recvmsg -- post a data buffer to an endpoint to receive inbound
+tagged messages.  Similar to the send operations, receive operations operate
 asynchronously.  Users should not touch the posted data buffer(s)
 until the receive operation has completed.  Posted receive buffers are
 matched with inbound send messages based on the tags associated with
@@ -154,26 +175,30 @@ been configured differently, the data buffer passed into kfi_tsend must
 not be touched by the application until the kfi_tsend call completes
 asynchronously.
 
-## kfi_tsendv
+## kfi_tsendv / kfi_tsendbv / kfi_tsendsgl
 
-The kfi_tsendv call adds support for a scatter-gather list to kfi_tsend.
-The kfi_sendv transfers the set of data buffers
-referenced by the iov parameter to a remote endpoint as a single
-message.
+The kfi_tsendv, kfi_tsendbv and kfi_tsendsgl calls add support for a
+scatter-gather list to kfi_tsend.  The kfi_sendv transfers the set of
+data buffers referenced by the iov parameter to a remote endpoint as a
+single message.  The kfi_tsendsgl call requires the scatterlist to be
+DMA mapped.
 
 ## kfi_tsendmsg
 
 The kfi_tsendmsg call supports data transfers over both connected and
 unconnected endpoints, with the ability to control the send operation
 per call through the use of flags.  The kfi_tsendmsg function takes a
-struct kfi_msg_tagged as input.
+`struct kfi_msg_tagged` as input.  The `msg_sgl` scatterlist must be
+DMA mapped.
 
-{% highlight c %}
+```C
+
 struct kfi_msg_tagged {
 	enum kfi_iov_type	type;
 	union {
 		const struct kvec	*msg_iov;
 		const struct bio_vec	*msg_biov;
+		const struct scatterlist	*msg_sgl;
 	};
 	void			**desc;
 	size_t			iov_count;
@@ -183,7 +208,8 @@ struct kfi_msg_tagged {
 	void			*context;
 	uint64_t		data;
 };
-{% endhighlight %}
+
+```
 
 ## kfi_tinject
 
@@ -209,18 +235,20 @@ which they were posted in order to match sends.  Message boundaries are
 maintained.  The order in which the receives complete is dependent on
 the endpoint type and protocol.
 
-## kfi_trecvv
+## kfi_trecvv / kfi_trecvbv / kfi_trecvsgl
 
-The kfi_trecvv call adds support for a scatter-gather list to kfi_trecv.
-The kfi_trecvv posts the set of data buffers referenced by the iov
-parameter to a receive incoming data.
+The kfi_trecvv, kfi_trecvbv and kfi_trecvsgl calls add support for a
+scatter-gather list to kfi_trecv.  The kfi_trecvv posts the set of data
+buffers referenced by the iov, biov or sgl parameter to a receive incoming
+data.  The kfi_trecvsgl call requires the scatterlist to be DMA mapped.
 
 ## kfi_trecvmsg
 
 The kfi_trecvmsg call supports posting buffers over both connected and
 unconnected endpoints, with the ability to control the receive
 operation per call through the use of flags.  The kfi_trecvmsg function
-takes a struct kfi_msg_tagged as input.
+takes a `struct kfi_msg_tagged` as input.  The `msg_sgl` scatterlist must be
+DMA mapped.
 
 # FLAGS
 

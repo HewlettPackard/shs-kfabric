@@ -9,16 +9,17 @@ tagline: kfabric Programmer's Manual
 
 kfi_rma - Remote memory access operations
 
-kfi_read / kfi_readv / kfi_readmsg
+kfi_read / kfi_readv / kfi_readbv / kfi_readsgl / kfi_readmsg
 :   Initiates a read from remote memory
 
-kfi_write / kfi_writev / kfi_writemsg
+kfi_write / kfi_writev / kfi_writebv / kfi_writesgl / kfi_writemsg /
 kfi_inject_write / kfi_writedata
 :   Initiate a write to remote memory
 
 # SYNOPSIS
 
-{% highlight c %}
+```C
+
 #include <kfi_rma.h>
 
 ssize_t
@@ -32,6 +33,11 @@ kfi_readv(struct kfid_ep *ep, const struct kvec *iov, void **desc,
 
 ssize_t
 kfi_readbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
+	   size_t count, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
+	   void *context)
+
+ssize_t
+kfi_readsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
 	   size_t count, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
 	   void *context)
 
@@ -50,6 +56,11 @@ kfi_writebv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 	    void *context)
 
 ssize_t
+kfi_writesgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	    size_t count, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+	    void *context)
+
+ssize_t
 kfi_inject_write(struct kfid_ep *ep, const void *buf, size_t len,
 		 kfi_addr_t dest_addr, uint64_t addr, uint64_t key)
 
@@ -57,7 +68,8 @@ ssize_t
 kfi_writedata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 	      uint64_t data, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
 	      void *context)
-{% endhighlight %}
+
+```
 
 # ARGUMENTS
 
@@ -72,7 +84,7 @@ kfi_writedata(struct kfid_ep *ep, const void *buf, size_t len, void *desc,
 : Length of data to read or write, specified in bytes.  Valid
   transfers are from 0 bytes up to the endpoint's max_msg_size.
 
-*iov*
+*iov / biov / sgl*
 : Vectored data buffer.
 
 *count*
@@ -114,18 +126,18 @@ directly between a local data buffer and a remote data buffer.  RMA
 transfers occur on a byte level granularity, and no message boundaries
 are maintained.
 
-The write functions -- kfi_write, kfi_writev, kfi_writemsg,
-kfi_inject_write, and kfi_writedata -- are used to transmit
-data into a remote memory buffer.  The main
+The write functions -- kfi_write, kfi_writev, kfi_writebv,
+kfi_writesgl, kfi_writemsg, kfi_inject_write, and kfi_writedata --
+are used to transmit data into a remote memory buffer.  The main
 difference between write functions are the number and type of
 parameters that they accept as input.  Otherwise, they perform the
 same general function.
 
-The read functions -- kfi_read, kfi_readv, and kfi_readmsg --
-are used to transfer data from a remote memory region into local data
-buffer(s).  Similar to the write operations, read operations operate
-asynchronously.  Users should not touch the posted data buffer(s)
-until the read operation has completed.
+The read functions -- kfi_read, kfi_readv, kfi_readbv, kfi_readsgl
+and kfi_readmsg -- are used to transfer data from a remote memory
+region into local data buffer(s).  Similar to the write operations,
+read operations operate asynchronously.  Users should not touch the
+posted data buffer(s) until the read operation has completed.
 
 Completed RMA operations are reported to the user through one or more
 completion queues associated with the endpoint.  Users provide context
@@ -148,20 +160,23 @@ called.  Unless the endpoint has been configured differently, the data
 buffer passed into kfi_write must not be touched by the application
 until the kfi_write call completes asynchronously.
 
-## kfi_writev
+## kfi_writev / kfi_writebv / kfi_writesgl
 
-The kfi_writev call adds support for a scatter-gather list to kfi_write.
-The kfi_writev transfers the set of data buffers
-referenced by the iov parameter to the remote memory region.
+The kfi_writev, kfi_writebv and kfi_writesgl calls add support for a
+scatter-gather list to kfi_write.  The calls transfer the set of data
+buffers referenced by the iov, biov or sgl parameter to the remote memory
+region.  The kfi_writesgl call requires the scatterlist to be DMA mapped.
 
 ## kfi_writemsg
 
 The kfi_writemsg call supports data transfers over both connected and
 unconnected endpoints, with the ability to control the write operation
 per call through the use of flags.  The kfi_writemsg function takes a
-struct kfi_msg_rma as input.
+`struct kfi_msg_rma` as input.  The `msg_sgl` scatterlist must be DMA
+mapped.
 
-{% highlight c %}
+```C
+
 struct kfi_rma_iov {
 	uint64_t		addr;
 	size_t			len;
@@ -173,6 +188,7 @@ struct kfi_msg_rma {
 	union {
 		const struct kvec	 *msg_iov;
 		const struct bio_vec	 *msg_biov;
+		const struct scatterlist	 *msg_sgl;
 	};
 	void			 **desc;
 	size_t			 iov_count;
@@ -182,7 +198,8 @@ struct kfi_msg_rma {
 	void			 *context;
 	uint64_t		 data;
 };
-{% endhighlight %}
+
+```
 
 ## kfi_inject_write
 
@@ -208,18 +225,21 @@ the remote memory region into the local data buffer.  The local
 endpoint must be connected to a remote endpoint or destination before
 kfi_read is called.
 
-## kfi_readv
+## kfi_readv / kfi_readbv / kfi_readsgl
 
-The kfi_readv call adds support for a scatter-gather list to kfi_read.
-The kfi_readv transfers data from the remote memory region into
-the set of data buffers referenced by the iov parameter.
+The kfi_readv, kfi_readbv and kfi_readsgl calls add support for a
+scatter-gather list to kfi_read.  The calls transfer data from the remote
+memory region into the set of data buffers referenced by the iov, biov,
+or sgl parameter.  The kfi_readsgl call requires the scatterlist to be DMA
+mapped.
 
 ## kfi_readmsg
 
 The kfi_readmsg call supports data transfers over both connected and
 unconnected endpoints, with the ability to control the read operation
 per call through the use of flags.  The kfi_readmsg function takes a
-struct kfi_msg_rma as input.
+`struct kfi_msg_rma` as input.  The `msg_sgl` scatterlist must be DMA
+mapped.
 
 # FLAGS
 

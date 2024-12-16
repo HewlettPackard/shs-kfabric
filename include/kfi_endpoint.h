@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2016 Intel Corporation. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -40,8 +41,9 @@
 struct kfi_msg {
 	enum kfi_iov_type	type;
 	union {
-		const struct kvec	*msg_iov;
-		const struct bio_vec	*msg_biov;
+		const struct kvec	 *msg_iov;
+		const struct bio_vec	 *msg_biov;
+		const struct scatterlist *msg_sgl;
 	};
 	void			**desc;
 	size_t			iov_count;
@@ -105,6 +107,12 @@ struct kfi_ops_msg {
 			void *context);
 	ssize_t	(*injectdata)(struct kfid_ep *ep, const void *buf, size_t len,
 			uint64_t data, kfi_addr_t dest_addr);
+	ssize_t (*recvsgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  void *context);
+	ssize_t (*sendsgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			  void **desc, size_t count, kfi_addr_t dest_addr,
+			  void *context);
 };
 
 struct kfi_ops_cm;
@@ -275,6 +283,13 @@ kfi_recvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 }
 
 static inline ssize_t
+kfi_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	   size_t count, kfi_addr_t src_addr, void *context)
+{
+	return ep->msg->recvsgl(ep, sgl, desc, count, src_addr, context);
+}
+
+static inline ssize_t
 kfi_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg, uint64_t flags)
 {
 	return ep->msg->recvmsg(ep, msg, flags);
@@ -299,6 +314,13 @@ kfi_sendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 	   size_t count, kfi_addr_t dest_addr, void *context)
 {
 	return ep->msg->sendbv(ep, biov, desc, count, dest_addr, context);
+}
+
+static inline ssize_t
+kfi_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	   size_t count, kfi_addr_t dest_addr, void *context)
+{
+	return ep->msg->sendsgl(ep, sgl, desc, count, dest_addr, context);
 }
 
 static inline ssize_t

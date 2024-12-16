@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2013-2016 Intel Corporation. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -43,8 +44,9 @@
 struct kfi_msg_tagged {
 	enum kfi_iov_type	type;
 	union {
-		const struct kvec	*msg_iov;
-		const struct bio_vec	*msg_biov;
+		const struct kvec	 *msg_iov;
+		const struct bio_vec	 *msg_biov;
+		const struct scatterlist *msg_sgl;
 	};
 	void			**desc;
 	size_t			iov_count;
@@ -86,6 +88,12 @@ struct kfi_ops_tagged {
 			uint64_t tag, void *context);
 	ssize_t	(*injectdata)(struct kfid_ep *ep, const void *buf, size_t len,
 			uint64_t data, kfi_addr_t dest_addr, uint64_t tag);
+	ssize_t (*recvsgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  uint64_t tag, uint64_t ignore, void *context);
+	ssize_t (*sendsgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			  void **desc, size_t count, kfi_addr_t dest_addr,
+			  uint64_t tag, void *context);
 };
 
 
@@ -118,6 +126,15 @@ kfi_trecvbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 }
 
 static inline ssize_t
+kfi_trecvsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	    size_t count, kfi_addr_t src_addr, uint64_t tag, uint64_t ignore,
+	    void *context)
+{
+	return ep->tagged->recvsgl(ep, sgl, desc, count, src_addr, tag, ignore,
+				  context);
+}
+
+static inline ssize_t
 kfi_trecvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 	     uint64_t flags)
 {
@@ -143,6 +160,14 @@ kfi_tsendbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 	    size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
 {
 	return ep->tagged->sendbv(ep, biov, desc, count, dest_addr, tag,
+				  context);
+}
+
+static inline ssize_t
+kfi_tsendsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	    size_t count, kfi_addr_t dest_addr, uint64_t tag, void *context)
+{
+	return ep->tagged->sendsgl(ep, sgl, desc, count, dest_addr, tag,
 				  context);
 }
 

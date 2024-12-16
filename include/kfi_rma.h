@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2016 Intel Corporation. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -48,6 +49,7 @@ struct kfi_msg_rma {
 	union {
 		const struct kvec	 *msg_iov;
 		const struct bio_vec	 *msg_biov;
+		const struct scatterlist *msg_sgl;
 	};
 	void			 **desc;
 	size_t			 iov_count;
@@ -90,6 +92,12 @@ struct kfi_ops_rma {
 	ssize_t	(*injectdata)(struct kfid_ep *ep, const void *buf, size_t len,
 			      uint64_t data, kfi_addr_t dest_addr,
 			      uint64_t addr, uint64_t key);
+	ssize_t	(*readsgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			  void **desc, size_t count, kfi_addr_t src_addr,
+			  uint64_t addr, uint64_t key, void *context);
+	ssize_t	(*writesgl)(struct kfid_ep *ep, const struct scatterlist *sgl,
+			   void **desc, size_t count, kfi_addr_t dest_addr,
+			   uint64_t addr, uint64_t key, void *context);
 };
 
 
@@ -117,6 +125,15 @@ kfi_readbv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 	   void *context)
 {
 	return ep->rma->readbv(ep, biov, desc, count, src_addr, addr, key,
+			      context);
+}
+
+static inline ssize_t
+kfi_readsgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	   size_t count, kfi_addr_t src_addr, uint64_t addr, uint64_t key,
+	   void *context)
+{
+	return ep->rma->readsgl(ep, sgl, desc, count, src_addr, addr, key,
 			      context);
 }
 
@@ -149,6 +166,15 @@ kfi_writebv(struct kfid_ep *ep, const struct bio_vec *biov, void **desc,
 	    void *context)
 {
 	return ep->rma->writebv(ep, biov, desc, count, dest_addr, addr, key,
+				context);
+}
+
+static inline ssize_t
+kfi_writesgl(struct kfid_ep *ep, const struct scatterlist *sgl, void **desc,
+	    size_t count, kfi_addr_t dest_addr, uint64_t addr, uint64_t key,
+	    void *context)
+{
+	return ep->rma->writesgl(ep, sgl, desc, count, dest_addr, addr, key,
 				context);
 }
 

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2013-2016 Intel Corporation. All rights reserved.
+ * Copyright 2024 Hewlett Packard Enterprise Development LP
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -94,8 +95,9 @@ struct kfid_mr {
 struct kfi_mr_attr {
 	enum kfi_iov_type	type;
 	union {
-		const struct kvec	*mr_iov;
-		const struct bio_vec	*mr_biov;
+		const struct kvec	 *mr_iov;
+		const struct bio_vec	 *mr_biov;
+		const struct scatterlist *mr_sgl;
 	};
 	size_t			iov_count;
 	uint64_t		access;
@@ -201,6 +203,10 @@ struct kfi_ops_mr {
 			 uint64_t flags, struct kfid_mr **mr, void *context);
 	int	(*regattr)(struct kfid *fid, const struct kfi_mr_attr *attr,
 			uint64_t flags, struct kfid_mr **mr);
+	int	(*regsgl)(struct kfid *fid, const struct scatterlist *sgl,
+			 size_t count, uint64_t access,
+			 uint64_t offset, uint64_t requested_key,
+			 uint64_t flags, struct kfid_mr **mr, void *context);
 };
 
 /* Domain bind flags */
@@ -281,6 +287,16 @@ kfi_mr_regbv(struct kfid_domain *domain, const struct bio_vec *biov,
 	     void *context)
 {
 	return domain->mr->regbv(&domain->fid, biov, count, access, offset,
+				requested_key, flags, mr, context);
+}
+
+static inline int
+kfi_mr_regsgl(struct kfid_domain *domain, const struct scatterlist *sgl,
+	     size_t count, uint64_t access, uint64_t offset,
+	     uint64_t requested_key, uint64_t flags, struct kfid_mr **mr,
+	     void *context)
+{
+	return domain->mr->regsgl(&domain->fid, sgl, count, access, offset,
 				requested_key, flags, mr, context);
 }
 
