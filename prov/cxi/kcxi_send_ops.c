@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider send operations.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -274,6 +274,10 @@ static ssize_t kcxi_sendmsg(struct kfid_ep *ep,
 		md = kcxi_md_biov_alloc(dom_if->kcxi_if, tx_ctx->send_cq, msg->msg_biov,
 					msg->iov_count, 0, map_flags);
 		break;
+	case KFI_SGL:
+		md = kcxi_md_sgl_alloc(dom_if->kcxi_if, tx_ctx->send_cq, msg->msg_sgl,
+					msg->iov_count, 0, map_flags);
+		break;
 	default:
 		TXC_ERR(tx_ctx, "Invalid buffer type: type=%d", msg->type);
 		rc = -EINVAL;
@@ -375,6 +379,35 @@ ssize_t kcxi_msg_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
 }
 
 /**
+ * kcxi_msg_sendsgl() - Post send using a scatter gather list
+ * @ep: Kfabric endpoint
+ * @sgl: Scatter gather list
+ * @desc: Memory descriptor (unused)
+ * @count: Number of scatter gather list entries
+ * @dest_addr: Destination address
+ * @context: User operation context
+ *
+ * Return: 0 on success. Else, kfabric negative errno.
+ */
+ssize_t kcxi_msg_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t dest_addr,
+			void *context)
+{
+	struct kfi_msg msg = {};
+	struct kcxi_tx_ctx *tx_ctx;
+
+	tx_ctx = container_of(ep, struct kcxi_tx_ctx, ctx);
+
+	msg.type = KFI_SGL;
+	msg.msg_sgl = sgl;
+	msg.iov_count = count;
+	msg.addr = dest_addr;
+	msg.context = context;
+
+	return kcxi_msg_sendmsg(ep, &msg, tx_ctx->attr.op_flags);
+}
+
+/**
  * kcxi_msg_sendbv() - Post send using a bvec buffer
  * @ep: Kfabric endpoint
  * @biov: Bvec buffer
@@ -465,6 +498,37 @@ ssize_t kcxi_tagged_sendmsg(struct kfid_ep *ep,
 			    const struct kfi_msg_tagged *msg, uint64_t flags)
 {
 	return kcxi_sendmsg(ep, msg, true, flags);
+}
+
+/**
+ * kcxi_tagged_sendsgl() - Post tagged send using scatter gather list
+ * @ep: Kfabric endpoint.
+ * @sgl: Scatter gather list
+ * @desc: Memory descriptor (unused).
+ * @count: Number of scatter gather list entries
+ * @dest_addr: Destination address.
+ * @tag: Message tag.
+ * @context: User operation context.
+ *
+ * Return: 0 on success. Else, kfabric negative errno.
+ */
+ssize_t kcxi_tagged_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			   void **desc, size_t count, kfi_addr_t dest_addr,
+			   uint64_t tag, void *context)
+{
+	const struct kfi_msg_tagged msg = {
+		.type = KFI_SGL,
+		.msg_sgl = sgl,
+		.iov_count = count,
+		.addr = dest_addr,
+		.tag = tag,
+		.context = context,
+	};
+	struct kcxi_tx_ctx *tx_ctx;
+
+	tx_ctx = container_of(ep, struct kcxi_tx_ctx, ctx);
+
+	return kcxi_tagged_sendmsg(ep, &msg, tx_ctx->attr.op_flags);
 }
 
 /**

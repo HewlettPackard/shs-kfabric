@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider RMA operations.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -302,6 +302,10 @@ static int kcxi_rma_command(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 		md = kcxi_md_biov_alloc(dom_if->kcxi_if, tx_ctx->send_cq, msg->msg_biov,
 					msg->iov_count, 0, map_flags);
 		break;
+	case KFI_SGL:
+		md = kcxi_md_sgl_alloc(dom_if->kcxi_if, tx_ctx->send_cq, msg->msg_sgl,
+					msg->iov_count, 0, map_flags);
+		break;
 	default:
 		TXC_ERR(tx_ctx, "Invalid buffer type: type=%d", msg->type);
 		rc = -EINVAL;
@@ -410,6 +414,100 @@ ssize_t kcxi_rma_readmsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 			 uint64_t flags)
 {
 	return kcxi_rma_command(ep, msg, flags, false);
+}
+
+/**
+ * kcxi_rma_writesgl() - Perform a RMA write operation using a scatter gather list
+ * @ep: Local kfabric endpoint
+ * @sgl: Scatter gather list
+ * @desc: Memory descriptor (unused)
+ * @count: Number of scatter gather list entries
+ * @dest_addr: Destination address
+ * @addr: Offset into remote memory region
+ * @key: Remote protection key
+ * @context: User specified pointer associated with this operation
+ *
+ * Return: 0 on success. Else, negative errno.
+ */
+ssize_t kcxi_rma_writesgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			 void **desc, size_t count, kfi_addr_t dest_addr,
+			 uint64_t addr, uint64_t key, void *context)
+{
+	size_t len = 0;
+	struct kfi_rma_iov rma_iov;
+	struct kfi_msg_rma msg_rma;
+	struct scatterlist *sg;
+	int i;
+	struct kcxi_tx_ctx *tx_ctx;
+
+	tx_ctx = container_of(ep, struct kcxi_tx_ctx, ctx);
+
+	if (count && sgl && sg_dma_address(sgl)) {
+		for_each_sg((struct scatterlist *)sgl, sg, count, i)
+			len += sg_dma_len(sg);
+	}
+
+	rma_iov.addr = addr;
+	rma_iov.len = len;
+	rma_iov.key = key;
+
+	msg_rma.type = KFI_SGL;
+	msg_rma.msg_sgl = sgl;
+	msg_rma.desc = desc;
+	msg_rma.iov_count = count;
+	msg_rma.addr = dest_addr;
+	msg_rma.rma_iov = &rma_iov;
+	msg_rma.rma_iov_count = 1;
+	msg_rma.context = context;
+
+	return kcxi_rma_command(ep, &msg_rma, tx_ctx->attr.op_flags, true);
+}
+
+/**
+ * kcxi_rma_readsgl() - Perform a RMA read operation using a scatter gather list
+ * @ep: Local kfabric endpoint
+ * @sgl: Scatter gather list
+ * @count: Number of scatter gather list entries
+ * @desc: Memory descriptor (unused)
+ * @src_addr: Source address
+ * @addr: Offset into remote memory region
+ * @key: Remote protection key
+ * @context: User specified pointer associated with this operation
+ *
+ * Return: 0 on success. Else, negative errno.
+ */
+ssize_t kcxi_rma_readsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t src_addr,
+			uint64_t addr, uint64_t key, void *context)
+{
+	size_t len = 0;
+	struct kfi_rma_iov rma_iov;
+	struct kfi_msg_rma msg_rma;
+	struct scatterlist *sg;
+	int i;
+	struct kcxi_tx_ctx *tx_ctx;
+
+	tx_ctx = container_of(ep, struct kcxi_tx_ctx, ctx);
+
+	if (count && sgl && sg_dma_address(sgl)) {
+		for_each_sg((struct scatterlist *)sgl, sg, count, i)
+			len += sg_dma_len(sg);
+	}
+
+	rma_iov.addr = addr;
+	rma_iov.len = len;
+	rma_iov.key = key;
+
+	msg_rma.type = KFI_SGL;
+	msg_rma.msg_sgl = sgl;
+	msg_rma.desc = desc;
+	msg_rma.iov_count = count;
+	msg_rma.addr = src_addr;
+	msg_rma.rma_iov = &rma_iov;
+	msg_rma.rma_iov_count = 1;
+	msg_rma.context = context;
+
+	return kcxi_rma_command(ep, &msg_rma, tx_ctx->attr.op_flags, false);
 }
 
 /**

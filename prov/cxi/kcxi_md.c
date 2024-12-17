@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider memory descriptor functions.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -130,6 +130,7 @@ static void kcxi_md_align_buffer(const void *buf, uintptr_t *va,
  * @kcxi_cq: kCXI completion queue
  * @len: MD length
  * @offset: Offset into MD
+ * @cachable: The md is cachable
  */
 static void kcxi_md_init(struct kcxi_md *md, struct kcxi_if *kcxi_if,
 			 struct kcxi_cq *kcxi_cq,
@@ -186,6 +187,10 @@ static int kcxi_md_cache_insert_md(struct kcxi_md *md)
 		}
 	}
 
+	md->sgt.sgl = NULL;
+	md->sgt.nents = 0;
+	md->sgt.orig_nents = 0;
+
 	spin_lock(&md->kcxi_cq->md_cache.md_cache_list_lock);
 	list_add(&md->entry, &md->kcxi_cq->md_cache.md_cache_list);
 	atomic_inc(&md->kcxi_cq->md_cache.md_cached_avail);
@@ -198,18 +203,27 @@ static int kcxi_md_cache_insert_md(struct kcxi_md *md)
 	return 0;
 }
 
+struct kcxi_md_info {
+	enum kfi_iov_type type;
+	union {
+		struct iov_iter *iter;
+		struct scatterlist *sgl;
+	};
+	size_t count;
+	size_t len;
+	uint64_t offset;
+};
+
 /**
  * kcxi_md_cache_remove_md() - Remove a memory descriptor from the software cache and
  * update it for re-use.
  * @kcxi_cq: kCXI completion queue
- * @iter: List of virtual addresses to map - supports ITER_KVEC and ITER_BVEC
- * @len: MD length
- * @offset: Offset into MD
+ * @md_info: md buffer details - supports ITER_KVEC, ITER_BVEC and scatterlist
  *
  * Return: Valid pointer on success. Else, error pointer.
  */
 static struct kcxi_md *kcxi_md_cache_remove_md(struct kcxi_cq *kcxi_cq,
-					struct iov_iter *iter, size_t len, uint64_t offset)
+					struct kcxi_md_info *md_info)
 {
 	struct kcxi_md *md;
 	int rc;
@@ -219,7 +233,7 @@ static struct kcxi_md *kcxi_md_cache_remove_md(struct kcxi_cq *kcxi_cq,
 	if (!kcxi_cq)
 		return ERR_PTR(-EINVAL);
 
-	if (len > kcxi_cq->md_cache.md_cache_bufsize)
+	if ((md_info->len + md_info->offset) > kcxi_cq->md_cache.md_cache_bufsize)
 		return ERR_PTR(-EINVAL);
 
 	spin_lock(&kcxi_cq->md_cache.md_cache_list_lock);
@@ -233,19 +247,37 @@ static struct kcxi_md *kcxi_md_cache_remove_md(struct kcxi_cq *kcxi_cq,
 	if (md == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	rc = cxi_update_iov(md->mapped_md, iter);
+	switch (md_info->type) {
+		case KFI_KVEC:
+		case KFI_BVEC:
+			rc = cxi_update_iov(md->mapped_md, md_info->iter);
+			break;
+		case KFI_SGL:
+			/* Since the orig_nents isn't known, set it to number of pages
+			 * because that is how cxi interprets it.
+			 */
+			md->sgt.sgl = md_info->sgl;
+			md->sgt.nents = md_info->count;
+			md->sgt.orig_nents = DIV_ROUND_UP(md_info->len + md_info->offset, PAGE_SIZE);
+			rc = cxi_update_sgtable(md->mapped_md, &md->sgt);
+			break;
+		default:
+			CQ_ERR(kcxi_cq, "Invalid buffer type: type=%d", md_info->type);
+			rc = -EINVAL;
+	}
+
 	if (rc) {
-		atomic_dec(&md->kcxi_cq->md_cache.md_cached_count);
-		atomic_dec(&md->kcxi_cq->domain->kcxi_if->md_cached_count);
-		md->is_cacheable = false;
-		kcxi_md_free(md);
-		CQ_ERR(kcxi_cq, "Failed to update IOV, freeing cached md: rc=%d", rc);
+		spin_lock(&kcxi_cq->md_cache.md_cache_list_lock);
+		list_add(&md->entry, &kcxi_cq->md_cache.md_cache_list);
+		atomic_inc(&kcxi_cq->md_cache.md_cached_avail);
+		spin_unlock(&kcxi_cq->md_cache.md_cache_list_lock);
+		CQ_ERR(kcxi_cq, "Failed to update, returning cached md: rc=%d", rc);
 		return 	ERR_PTR(rc);
 	}
 
 	/* re-initialize md members that change with update */
-	md->len = len;
-	md->addr = md->mapped_md->iova + offset;
+	md->len = md_info->len;
+	md->addr = md->mapped_md->iova + md_info->offset;
 	md->user_addr = 0; /* set to 0 since md cache is only for kernel iova */
 	md->calling_cpu = smp_processor_id();
 
@@ -365,6 +397,112 @@ void kcxi_md_cache_flush(struct kcxi_cq *kcxi_cq)
 }
 
 /**
+ * kcxi_md_sgl_alloc() - Map a scatter gather list
+ * @kcxi_if: kCXI interface
+ * @kcxi_cq: kCXI completion queue
+ * @sgl: Scattler gather list to be mapped
+ * @count: Number of scatter gather list entries
+ * @offset: Offset into the scatter gather list
+ * @flags: Mapping flags
+ *
+ * Note: cxi_map_sgtable() will ensure that gaps do not exist in the sgl.
+ *
+ * Return: Valid pointer on success. Else, error pointer.
+ */
+struct kcxi_md *kcxi_md_sgl_alloc(struct kcxi_if *kcxi_if,
+				   struct kcxi_cq *kcxi_cq,
+				   const struct scatterlist *sgl, size_t count,
+				   uint64_t offset, uint32_t flags)
+{
+	int i;
+	int rc;
+	struct scatterlist *sg;
+	struct kcxi_md *md;
+	struct kcxi_md_info md_info;
+	size_t nob;
+
+	if (!kcxi_if || (!sgl && count) || (sgl && !count) ||
+	    (!sgl && !count && offset)) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/* If no sgl or count is zero, treat as zero byte MD and use kcxi_md_alloc(). */
+	if (!sgl || count == 0)
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+
+	if (!sg_dma_address(sgl)) {
+		KCXI_IF_ERR(kcxi_if, "scatterlist not DMA mapped");
+		rc = -EINVAL;
+		goto err;
+	}
+
+	nob = 0;
+	for_each_sg((struct scatterlist *)sgl, sg, count, i)
+		nob += sg_dma_len(sg);
+
+	if (offset > nob) {
+		KCXI_IF_ERR(kcxi_if, "offset exceeded number of bytes");
+		rc = -EINVAL;
+		goto err;
+	} else if (!nob) {
+		/* If no bytes, treat as zero byte MD. */
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+	}
+
+	/* Only the first sg (page) in the list can have an offset. */
+	md_info.type = KFI_SGL;
+	md_info.sgl = (struct scatterlist *)sgl;
+	md_info.count = count;
+	md_info.len = nob - offset;
+	md_info.offset = sgl->offset + offset;
+
+	md = kcxi_md_cache_remove_md(kcxi_cq, &md_info);
+	if (!IS_ERR(md))
+		return md;
+
+	md = kmem_cache_zalloc(md_cache, GFP_NOWAIT);
+	if (!md) {
+		KCXI_IF_ERR(kcxi_if, "Failed to allocate MD");
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	/* Since the orig_nents isn't known, set it to number of pages
+	 * because that is how cxi interprets it.
+	 */
+	md->sgt.sgl = md_info.sgl;
+	md->sgt.nents = md_info.count;
+	md->sgt.orig_nents = DIV_ROUND_UP(md_info.len + md_info.offset, PAGE_SIZE);
+
+	if (!md_caching)
+		flags |= CXI_MAP_NOCACHE;
+
+	md->mapped_md = cxi_map_sgtable(kcxi_if->lni, &md->sgt, flags);
+	if (IS_ERR(md->mapped_md)) {
+		rc = PTR_ERR(md->mapped_md);
+		KCXI_IF_ERR(kcxi_if, "Failed to map sgt: rc=%d", rc);
+		goto err_free_md;
+	}
+
+	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
+		     md->mapped_md->lac, false);
+
+	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
+		      md->len, md->lac,
+		      atomic_read(&md->kcxi_if->md_cur_count),
+		      md->is_cacheable ? "true" : "false");
+
+	return md;
+
+err_free_md:
+	kmem_cache_free(md_cache, md);
+err:
+	KCXI_IF_ERR(kcxi_if, "Failed to map buffer: rc=%d", rc);
+	return ERR_PTR(rc);
+}
+
+/**
  * kcxi_md_biov_alloc() - Map a bvec buffer.
  * @kcxi_if: kCXI interface
  * @kcxi_cq: kCXI completion queue
@@ -388,8 +526,7 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 	struct kcxi_md *md;
 	size_t nob;
 	void *va;
-	size_t md_len;
-	uint64_t md_offset;
+	struct kcxi_md_info md_info;
 
 	if (!kcxi_if || (!biov && count) || (biov && !count) ||
 	    (!biov && !count && offset)) {
@@ -402,8 +539,7 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
 	} else if (count == 1) {
 		va = page_to_virt(biov[0].bv_page) + biov[0].bv_offset;
-		md_len = biov[0].bv_len;
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, va, md_len, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, va, biov[0].bv_len, offset, flags, false);
 	}
 
 	nob = 0;
@@ -422,10 +558,13 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 	iov_iter_bvec(&iter, KF_ITER_BVEC, biov, count, nob);
 
 	/* Only the first biov (page) can have an offset. */
-	md_len = nob - offset;
-	md_offset = biov[0].bv_offset + offset;
+	md_info.type = KFI_BVEC;
+	md_info.iter = &iter;
+	md_info.count = count;
+	md_info.len = nob - offset;
+	md_info.offset = biov[0].bv_offset + offset;
 
-	md = kcxi_md_cache_remove_md(kcxi_cq, &iter, md_len, md_offset);
+	md = kcxi_md_cache_remove_md(kcxi_cq, &md_info);
 	if (!IS_ERR(md))
 		return md;
 
@@ -446,7 +585,7 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 		goto err_free_md;
 	}
 
-	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_len, md_offset,
+	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
 		     md->mapped_md->lac, false);
 
 	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
@@ -488,8 +627,7 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 	uintptr_t va;
 	uint64_t va_offset;
 	size_t nob;
-	size_t md_len;
-	uint64_t md_offset;
+	struct kcxi_md_info md_info;
 
 	if (!kcxi_if || (!iov && count) || (iov && !count) ||
 	    (!iov && !count && offset)) {
@@ -502,8 +640,7 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
 	} else if (count == 1) {
 		va = (uintptr_t)iov[0].iov_base;
-		md_len =  iov[0].iov_len;
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, (void *)va, md_len, offset,
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, (void *)va, iov[0].iov_len, offset,
 				     flags, false);
 	}
 
@@ -524,10 +661,14 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 
 	kcxi_md_align_buffer(iov[0].iov_base, &va, &va_offset);
 
-	md_len = nob - offset;
-	md_offset = va_offset + offset;
+	md_info.type = KFI_KVEC;
+	md_info.iter = &iter;
+	md_info.count = count;
+	md_info.len = nob - offset;
+	md_info.offset = va_offset + offset;
 
-	md = kcxi_md_cache_remove_md(kcxi_cq, &iter, md_len, md_offset);
+
+	md = kcxi_md_cache_remove_md(kcxi_cq, &md_info);
 	if (!IS_ERR(md))
 		return md;
 
@@ -548,7 +689,7 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 		goto err_free_md;
 	}
 
-	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_len, md_offset,
+	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
 		     md->mapped_md->lac, false);
 
 	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
@@ -573,6 +714,7 @@ err:
  * @len: Length of buffer
  * @offset: Offset into the buffer
  * @flags: CXI mapping flags
+ * @cachable: The md is cachable
  *
  * Return: Valid pointer on success. Else, error pointer.
  */

@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider receive operations.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -355,6 +355,10 @@ ssize_t kcxi_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 		md = kcxi_md_biov_alloc(dom_if->kcxi_if, rx_ctx->recv_cq, msg->msg_biov,
 					msg->iov_count, 0, map_flags);
 		break;
+	case KFI_SGL:
+		md = kcxi_md_sgl_alloc(dom_if->kcxi_if, rx_ctx->recv_cq, msg->msg_sgl,
+					msg->iov_count, 0, map_flags);
+		break;
 	default:
 		RXC_ERR(rx_ctx, "Invalid buffer type: type=%d", msg->type);
 		rc = -EINVAL;
@@ -495,6 +499,35 @@ ssize_t kcxi_msg_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
 }
 
 /**
+ * kcxi_msg_recvsgl() - Post recv using a scatter gather list
+ * @ep: Kfabric endpoint
+ * @sgl: Scatter gather list
+ * @desc: Memory descriptor (unused)
+ * @count: Number of scatter gather list entries
+ * @src_addr: Source address for posted recv buffer (unused currently)
+ * @context: User operation context
+ *
+ * Return: 0 on success. Else, kfabric negative errno.
+ */
+ssize_t kcxi_msg_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t src_addr,
+			void *context)
+{
+	struct kfi_msg msg = {};
+	struct kcxi_rx_ctx *rx_ctx;
+
+	rx_ctx = container_of(ep, struct kcxi_rx_ctx, ctx);
+
+	msg.type = KFI_SGL;
+	msg.msg_sgl = sgl;
+	msg.iov_count = count;
+	msg.addr = src_addr;
+	msg.context = context;
+
+	return kcxi_msg_recvmsg(ep, &msg, rx_ctx->attr.op_flags);
+}
+
+/**
  * kcxi_msg_recvbv() - Post recv using a bvec buffer
  * @ep: Kfabric endpoint
  * @biov: Bvec buffer
@@ -585,6 +618,39 @@ ssize_t kcxi_tagged_recvmsg(struct kfid_ep *ep,
 			    const struct kfi_msg_tagged *msg, uint64_t flags)
 {
 	return kcxi_recvmsg(ep, msg, true, flags);
+}
+
+/**
+ * kcxi_tagged_recvsgl() - Post tagged recv using a scatter gather list
+ * @ep: Kfabric endpoint.
+ * @sgl: Scatter gather list
+ * @desc: Memory descriptor (unused).
+ * @count: Number of scatter gather list entries
+ * @src_addr: Source address for posted recv buffer (unused currently).
+ * @tag: Receive tag bits.
+ * @ignore: Receive ignore bits.
+ * @context: User operation context.
+ *
+ * Return: 0 on success. Else, kfabric negative errno.
+ */
+ssize_t kcxi_tagged_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			   void **desc, size_t count, kfi_addr_t src_addr,
+			   uint64_t tag, uint64_t ignore, void *context)
+{
+	const struct kfi_msg_tagged msg = {
+		.type = KFI_SGL,
+		.msg_sgl = sgl,
+		.iov_count = count,
+		.addr = src_addr,
+		.tag = tag,
+		.ignore = ignore,
+		.context = context,
+	};
+	struct kcxi_rx_ctx *rx_ctx;
+
+	rx_ctx = container_of(ep, struct kcxi_rx_ctx, ctx);
+
+	return kcxi_recvmsg(ep, &msg, true, rx_ctx->attr.op_flags);
 }
 
 /**

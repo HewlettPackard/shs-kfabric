@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider endpoints.
- * Copyright 2019,2021 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -253,9 +253,13 @@ static struct kfi_ops_cm kcxi_ep_cm_ops = {
 static struct kfi_ops_msg kcxi_ep_msg_ops = {
 	.recv = kfi_no_msg_recv,
 	.recvv = kfi_no_msg_recvv,
+	.recvbv = kfi_no_msg_recvbv,
+	.recvsgl = kfi_no_msg_recvsgl,
 	.recvmsg = kfi_no_msg_recvmsg,
 	.send = kfi_no_msg_send,
 	.sendv = kfi_no_msg_sendv,
+	.sendbv = kfi_no_msg_sendbv,
+	.sendsgl = kfi_no_msg_sendsgl,
 	.sendmsg = kfi_no_msg_sendmsg,
 	.inject = kfi_no_msg_inject,
 	.senddata = kfi_no_msg_senddata,
@@ -265,9 +269,13 @@ static struct kfi_ops_msg kcxi_ep_msg_ops = {
 static struct kfi_ops_rma kcxi_ep_rma_ops = {
 	.read = kfi_no_rma_read,
 	.readv = kfi_no_rma_readv,
+	.readbv = kfi_no_rma_readbv,
+	.readsgl = kfi_no_rma_readsgl,
 	.readmsg = kfi_no_rma_readmsg,
 	.write = kfi_no_rma_write,
 	.writev = kfi_no_rma_writev,
+	.writebv = kfi_no_rma_writebv,
+	.writesgl = kfi_no_rma_writesgl,
 	.writemsg = kfi_no_rma_writemsg,
 	.inject = kfi_no_rma_inject,
 	.writedata = kfi_no_rma_writedata,
@@ -277,9 +285,13 @@ static struct kfi_ops_rma kcxi_ep_rma_ops = {
 static struct kfi_ops_tagged kcxi_ep_tagged_ops = {
 	.recv = kfi_no_tagged_recv,
 	.recvv = kfi_no_tagged_recvv,
+	.recvbv = kfi_no_tagged_recvbv,
+	.recvsgl = kfi_no_tagged_recvsgl,
 	.recvmsg = kfi_no_tagged_recvmsg,
 	.send = kfi_no_tagged_send,
 	.sendv = kfi_no_tagged_sendv,
+	.sendbv = kfi_no_tagged_sendbv,
+	.sendsgl = kfi_no_tagged_sendsgl,
 	.sendmsg = kfi_no_tagged_sendmsg,
 	.inject = kfi_no_tagged_inject,
 	.senddata = kfi_no_tagged_senddata,

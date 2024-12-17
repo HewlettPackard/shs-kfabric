@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider domain.
- * Copyright 2018-2023 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -538,6 +538,7 @@ static struct kfi_ops_mr kcxi_mr_ops = {
 	.reg = kcxi_mr_reg,
 	.regv = kcxi_mr_regv,
 	.regbv = kcxi_mr_regbv,
+	.regsgl = kcxi_mr_regsgl,
 	.regattr = kfi_no_mr_regattr
 };
 

@@ -476,6 +476,7 @@ struct kcxi_md {
 	int calling_cpu;
 	struct list_head entry;
 	bool is_cacheable;
+	struct sg_table sgt;
 };
 
 static inline bool kcxi_md_phys_mapping(struct kcxi_md *md)
@@ -1233,6 +1234,9 @@ struct kcxi_mr_domain *kcxi_mr_domain_alloc(struct kcxi_cq *cq,
 int kcxi_mr_domain_free(struct kcxi_mr_domain *mr_domain);
 
 /* Functions in kcxi_mr.c */
+int kcxi_mr_regsgl(struct kfid *fid, const struct scatterlist *sgl, size_t count,
+		  uint64_t access, uint64_t offset, uint64_t requested_key,
+		  uint64_t flags, struct kfid_mr **mr, void *context);
 int kcxi_mr_regbv(struct kfid *fid, const struct bio_vec *biov, size_t count,
 		  uint64_t access, uint64_t offset, uint64_t requested_key,
 		  uint64_t flags, struct kfid_mr **mr, void *context);
@@ -1247,6 +1251,10 @@ int kcxi_mr_reg(struct kfid *fid, const void *buf, size_t len, uint64_t access,
 void kcxi_md_free(struct kcxi_md *md);
 void kcxi_md_cache_populate(struct kcxi_cq *kcxi_cq);
 void kcxi_md_cache_flush(struct kcxi_cq *kcxi_cq);
+struct kcxi_md *kcxi_md_sgl_alloc(struct kcxi_if *kcxi_if,
+				  struct kcxi_cq *kcxi_cq,
+				  const struct scatterlist *sgl, size_t count,
+				  uint64_t offset, uint32_t flags);
 struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 				   struct kcxi_cq *kcxi_cq,
 				   const struct bio_vec *biov, size_t count,
@@ -1267,6 +1275,12 @@ ssize_t kcxi_rma_writemsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 			  uint64_t flags);
 ssize_t kcxi_rma_readmsg(struct kfid_ep *ep, const struct kfi_msg_rma *msg,
 			 uint64_t flags);
+ssize_t kcxi_rma_writesgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			 void **desc, size_t count, kfi_addr_t dest_addr,
+			 uint64_t addr, uint64_t key, void *context);
+ssize_t kcxi_rma_readsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t src_addr,
+			uint64_t addr, uint64_t key, void *context);
 ssize_t kcxi_rma_writebv(struct kfid_ep *ep, const struct bio_vec *biov,
 			 void **desc, size_t count, kfi_addr_t dest_addr,
 			 uint64_t addr, uint64_t key, void *context);
@@ -1321,6 +1335,9 @@ int kcxi_domain_if_free(struct kcxi_domain_if *cxi_dom_if);
 /* Functions in kcxi_recv_ops.c */
 ssize_t kcxi_msg_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
 			 uint64_t flags);
+ssize_t kcxi_msg_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t src_addr,
+			void *context);
 ssize_t kcxi_msg_recvbv(struct kfid_ep *ep, const struct bio_vec *biov,
 			void **desc, size_t count, kfi_addr_t src_addr,
 			void *context);
@@ -1330,6 +1347,9 @@ ssize_t kcxi_msg_recv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 		      kfi_addr_t src_addr, void *context);
 ssize_t kcxi_tagged_recvmsg(struct kfid_ep *ep,
 			    const struct kfi_msg_tagged *msg, uint64_t flags);
+ssize_t kcxi_tagged_recvsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			   void **desc, size_t count, kfi_addr_t src_addr,
+			   uint64_t tag, uint64_t ignore, void *context);
 ssize_t kcxi_tagged_recvbv(struct kfid_ep *ep, const struct bio_vec *biov,
 			   void **desc, size_t count, kfi_addr_t src_addr,
 			   uint64_t tag, uint64_t ignore, void *context);
@@ -1343,6 +1363,9 @@ ssize_t kcxi_tagged_recv(struct kfid_ep *ep, void *buf, size_t len, void *desc,
 /* Functions in kcxi_send_ops.c */
 ssize_t kcxi_msg_sendmsg(struct kfid_ep *ep, const struct kfi_msg *msg,
 			 uint64_t flags);
+ssize_t kcxi_msg_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			void **desc, size_t count, kfi_addr_t dest_addr,
+			void *context);
 ssize_t kcxi_msg_sendbv(struct kfid_ep *ep, const struct bio_vec *biov,
 			void **desc, size_t count, kfi_addr_t dest_addr,
 			void *context);
@@ -1352,6 +1375,9 @@ ssize_t kcxi_msg_send(struct kfid_ep *ep, const void *buf, size_t len,
 		      void *desc, kfi_addr_t dest_addr, void *context);
 ssize_t kcxi_tagged_sendmsg(struct kfid_ep *ep,
 			    const struct kfi_msg_tagged *msg, uint64_t flags);
+ssize_t kcxi_tagged_sendsgl(struct kfid_ep *ep, const struct scatterlist *sgl,
+			   void **desc, size_t count, kfi_addr_t dest_addr,
+			   uint64_t tag, void *context);
 ssize_t kcxi_tagged_sendbv(struct kfid_ep *ep, const struct bio_vec *biov,
 			   void **desc, size_t count, kfi_addr_t dest_addr,
 			   uint64_t tag, void *context);

@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider memory regions.
- * Copyright 2019-2021,2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2021,2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -445,6 +445,90 @@ static struct kcxi_mr *kcxi_mr_alloc(struct kcxi_domain *dom,
 	atomic_inc(&dom->ref_cnt);
 
 	return mr;
+}
+
+/**
+ * kcxi_mr_regsgl() - Allocate a kfabric MR using a scattter gather list
+ * @fid: Kfabric domain fid
+ * @sgl: Scatter gather list
+ * @count: Number of scatter gather list entries
+ * @access: Kfabric access flags
+ * @offset: Offset of buffer
+ * @requested_key: Requested key for peers
+ * @flags: MR reg flags
+ * @mr: User MR pointer to be set on success
+ * @context: User context
+ *
+ * Return: 0 on success. Else, negative kfabric errno.
+ */
+int kcxi_mr_regsgl(struct kfid *fid, const struct scatterlist *sgl, size_t count,
+		  uint64_t access, uint64_t offset, uint64_t requested_key,
+		  uint64_t flags, struct kfid_mr **mr, void *context)
+{
+	struct kcxi_domain *kcxi_dom;
+	struct kcxi_mr *kcxi_mr;
+	struct kcxi_md *md;
+	uint32_t map_flags = 0;
+	int rc;
+
+	if (!mr) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/*
+	 * Don't support MR flags. In the future, when a MR can be bound to a
+	 * completion queue, the need for KFI_RMA_EVENT may be needed.
+	 */
+	if (flags) {
+		rc = -KFI_EBADFLAGS;
+		goto err;
+	}
+
+	/*
+	 * Since kCXI supports scalable memory registration, memory registration
+	 * only needs to occur for remote access. This could be changed in the
+	 * future is needed.
+	 */
+	if (!(access & (KFI_REMOTE_READ | KFI_REMOTE_WRITE))) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	kcxi_dom = container_of(fid, struct kcxi_domain, dom_fid.fid);
+
+	/* Setup the CXI mapping flags */
+	if (access & KFI_REMOTE_READ)
+		map_flags |= CXI_MAP_READ;
+
+	if (access & KFI_REMOTE_WRITE)
+		map_flags |= CXI_MAP_WRITE;
+
+	md = kcxi_md_sgl_alloc(kcxi_dom->kcxi_if, NULL, sgl, count, offset,
+				map_flags);
+	if (IS_ERR(md)) {
+		rc = PTR_ERR(md);
+		goto err;
+	}
+
+	kcxi_mr = kcxi_mr_alloc(kcxi_dom, md, access, requested_key, context);
+	if (IS_ERR(kcxi_mr)) {
+		rc = PTR_ERR(kcxi_mr);
+		goto err_free_md;
+	}
+
+	LOG_DEBUG("MR allocated: key=%llx access=%llx length=%lu",
+		  requested_key, access, md->len);
+
+	*mr = &kcxi_mr->mr_fid;
+
+	return 0;
+
+err_free_md:
+	kcxi_md_free(md);
+err:
+	*mr = NULL;
+	return rc;
 }
 
 /**

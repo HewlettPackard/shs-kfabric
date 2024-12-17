@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider RX context implementation.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -651,8 +651,11 @@ static struct kfi_ops_msg kcxi_rx_ctx_msg_ops = {
 	.recvv = kcxi_msg_recvv,
 	.recvbv = kcxi_msg_recvbv,
 	.recvmsg = kcxi_msg_recvmsg,
+	.recvsgl = kcxi_msg_recvsgl,
 	.send = kfi_no_msg_send,
 	.sendv = kfi_no_msg_sendv,
+	.sendbv = kfi_no_msg_sendbv,
+	.sendsgl = kfi_no_msg_sendsgl,
 	.sendmsg = kfi_no_msg_sendmsg,
 	.inject = kfi_no_msg_inject,
 	.senddata = kfi_no_msg_senddata,
@@ -662,9 +665,13 @@ static struct kfi_ops_msg kcxi_rx_ctx_msg_ops = {
 static struct kfi_ops_rma kcxi_rx_ctx_rma_ops = {
 	.read = kfi_no_rma_read,
 	.readv = kfi_no_rma_readv,
+	.readbv = kfi_no_rma_readbv,
+	.readsgl = kfi_no_rma_readsgl,
 	.readmsg = kfi_no_rma_readmsg,
 	.write = kfi_no_rma_write,
 	.writev = kfi_no_rma_writev,
+	.writebv = kfi_no_rma_writebv,
+	.writesgl = kfi_no_rma_writesgl,
 	.writemsg = kfi_no_rma_writemsg,
 	.inject = kfi_no_rma_inject,
 	.writedata = kfi_no_rma_writedata,
@@ -675,10 +682,12 @@ static struct kfi_ops_tagged kcxi_rx_ctx_tagged_ops = {
 	.recv = kcxi_tagged_recv,
 	.recvv = kcxi_tagged_recvv,
 	.recvbv = kcxi_tagged_recvbv,
+	.recvsgl = kcxi_tagged_recvsgl,
 	.recvmsg = kcxi_tagged_recvmsg,
 	.send = kfi_no_tagged_send,
 	.sendv = kfi_no_tagged_sendv,
 	.sendbv = kfi_no_tagged_sendbv,
+	.sendsgl = kfi_no_tagged_sendsgl,
 	.sendmsg = kfi_no_tagged_sendmsg,
 	.inject = kfi_no_tagged_inject,
 	.senddata = kfi_no_tagged_senddata,
