@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2019 Cray Inc. All Rights Reserved.
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -22,6 +22,10 @@
 #include <kfi_tagged.h>
 #include <linux/uio.h>
 #include <linux/bvec.h>
+#include <linux/scatterlist.h>
+#include <linux/dma-mapping.h>
+
+#include "../../../prov/cxi/kcxi_prov.h"
 
 #ifdef MODULE_NAME
 #undef MODULE_NAME
@@ -37,6 +41,7 @@ static struct kfid_cq *cq;
 static struct kfid_ep *sep;
 static struct kfid_ep *rx;
 static struct kfid_ep *tx;
+static struct device *device;
 
 #define TX_BUF_SIZE (PAGE_SIZE * 4)
 #define RX_BUF_SIZE TX_BUF_SIZE
@@ -44,6 +49,8 @@ static void *rx_buffer;
 static void *tx_buffer;
 static struct bio_vec rx_bvec[RX_BUF_SIZE / PAGE_SIZE];
 static struct bio_vec tx_bvec[TX_BUF_SIZE / PAGE_SIZE];
+static struct sg_table rx_sgt;
+static struct sg_table tx_sgt;
 
 static char *node = "0x0";
 static char *service = "0";
@@ -74,6 +81,8 @@ static int test_init(void)
 	struct kfi_cq_attr cq_attr = {};
 	struct kfi_tx_attr tx_attr = {};
 	struct kfi_rx_attr rx_attr = {};
+	struct kfi_cxi_domain_ops *dom_ops;
+	struct scatterlist *sg;
 	int rc;
 	int i;
 
@@ -104,6 +113,17 @@ static int test_init(void)
 	if (rc) {
 		LOG_ERR("Failed to create domain object");
 		goto err_free_fabric;
+	}
+
+	device = NULL;
+	rc = kfi_open_ops(&domain->fid, KFI_CXI_DOM_OPS_1, 0,
+				(void **)&dom_ops, NULL);
+	if (!rc) {
+		rc = dom_ops->get_device(&domain->fid, &device);
+		if (rc) {
+			LOG_ERR("Failed to get device");
+			goto err_free_domain;
+		}
 	}
 
 	av_attr.type = KFI_AV_UNSPEC;
@@ -207,16 +227,58 @@ static int test_init(void)
 		tx_bvec[i].bv_len = PAGE_SIZE;
 	}
 
+	rc = sg_alloc_table(&rx_sgt, ARRAY_SIZE(rx_bvec), GFP_KERNEL);
+	if (rc)
+		goto err_free_tx_bvec;
+
+	sg = rx_sgt.sgl;
+	for (i = 0; i < ARRAY_SIZE(rx_bvec); i++) {
+		sg_set_page(sg, rx_bvec[i].bv_page,
+			rx_bvec[i].bv_len,
+			rx_bvec[i].bv_offset);
+		sg = sg_next(sg);
+	}
+
+	rc = dma_map_sgtable(device, &rx_sgt, DMA_BIDIRECTIONAL, 0);
+	if (rc) {
+		goto err_free_rx_sgt;
+	}
+
+	rc = sg_alloc_table(&tx_sgt, ARRAY_SIZE(tx_bvec), GFP_KERNEL);
+	if (rc)
+		goto err_unmap_rx_sgt;
+
+	sg = tx_sgt.sgl;
+	for (i = 0; i < ARRAY_SIZE(tx_bvec); i++) {
+		sg_set_page(sg, tx_bvec[i].bv_page,
+			tx_bvec[i].bv_len,
+			tx_bvec[i].bv_offset);
+		sg = sg_next(sg);
+	}
+
+	rc = dma_map_sgtable(device, &tx_sgt, DMA_BIDIRECTIONAL, 0);
+	if (rc) {
+		goto err_free_tx_sgt;
+	}
+
 	rc = kfi_av_insertsvc(av, node, service, &loopback_addr, 0, NULL);
 	if (rc < 0)
-		goto err_free_tx_buffer;
+		goto err_unmap_tx_sgt;
 
 	rc = kfi_av_insertsvc(av, node, src_addr_service, &src_addr, 0, NULL);
 	if (rc < 0)
-		goto err_free_tx_buffer;
+		goto err_unmap_tx_sgt;
 
 	return 0;
 
+err_unmap_tx_sgt:
+	dma_unmap_sgtable(device, &tx_sgt, DMA_BIDIRECTIONAL, 0);
+err_free_tx_sgt:
+	sg_free_table(&tx_sgt);
+err_unmap_rx_sgt:
+	dma_unmap_sgtable(device, &rx_sgt, DMA_BIDIRECTIONAL, 0);
+err_free_rx_sgt:
+	sg_free_table(&rx_sgt);
 err_free_tx_bvec:
 	for (i = 0; i < ARRAY_SIZE(tx_bvec); i++) {
 		if (tx_bvec[i].bv_page) {
@@ -231,7 +293,6 @@ err_free_rx_bvec:
 			rx_bvec[i].bv_page = NULL;
 		}
 	}
-err_free_tx_buffer:
 	kfree(tx_buffer);
 err_free_rx_buffer:
 	kfree(rx_buffer);
@@ -273,6 +334,11 @@ static void test_fini(void)
 
 	kfree(tx_buffer);
 	kfree(rx_buffer);
+
+	dma_unmap_sgtable(device, &tx_sgt, DMA_BIDIRECTIONAL, 0);
+	sg_free_table(&tx_sgt);
+	dma_unmap_sgtable(device, &rx_sgt, DMA_BIDIRECTIONAL, 0);
+	sg_free_table(&rx_sgt);
 
 	for (i = 0; i < ARRAY_SIZE(tx_bvec); i++) {
 		__free_page(tx_bvec[i].bv_page);
@@ -565,6 +631,52 @@ err:
 	return rc;
 }
 
+/* Verify that tagged send sgl without ignore bits work. */
+static int test_tsendsgl_no_ignore(int id)
+{
+	uint64_t tag = 0x9875b;
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rc = kfi_trecvsgl(rx, rx_sgt.sgl, NULL, rx_sgt.nents,
+			 KFI_ADDR_UNSPEC, tag, 0, rx);
+	if (rc) {
+		LOG_ERR("Failed to post tagged receive buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	rc = kfi_tsendsgl(tx, tx_sgt.sgl, NULL, tx_sgt.nents, loopback_addr,
+			 tag, tx);
+	if (rc) {
+		LOG_ERR("Failed to post tagged send buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	rc = verify_events(tag);
+	if (rc) {
+		LOG_ERR("Failed to verify events: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
 /* Verify that tagged send message without ignore bits work. */
 static int test_tsendmsg_no_ignore(int id)
 {
@@ -785,6 +897,54 @@ err:
 	return rc;
 }
 
+/* Verify that tagged send sgl with ignore bits work. */
+static int test_tsendsgl_ignore(int id)
+{
+	uint64_t ignore = 0xFFFF;
+	uint64_t recv_tag = 0x10000;
+	uint64_t tag = ignore | recv_tag;
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rc = kfi_trecvsgl(rx, rx_sgt.sgl, NULL, rx_sgt.nents,
+			 KFI_ADDR_UNSPEC, recv_tag, ignore, rx);
+	if (rc) {
+		LOG_ERR("Failed to post tagged receive buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	rc = kfi_tsendsgl(tx, tx_sgt.sgl, NULL, tx_sgt.nents, loopback_addr,
+			 tag, tx);
+	if (rc) {
+		LOG_ERR("Failed to post tagged send buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	rc = verify_events(tag);
+	if (rc) {
+		LOG_ERR("Failed to verify events: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
 /* Verify that tagged send message with ignore bits work. */
 static int test_tsendmsg_ignore(int id)
 {
@@ -956,6 +1116,47 @@ static int test_tsendbv_invalid_tag(int id)
 	}
 
 	rc = kfi_tsendbv(tx, tx_bvec, NULL, ARRAY_SIZE(tx_bvec), loopback_addr,
+			 tag, tx);
+	if (!rc) {
+		LOG_ERR("Tagged send buffer should not have been posted");
+		rc = -EIO;
+		goto err_cleanup;
+	}
+
+	if (rc != -EINVAL) {
+		LOG_ERR("Invalid RC: expected=%d got=%d", -EINVAL, rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
+/* Verify that tagged sgl send with invalid tag bits is rejected. CXI provider
+ * does not support all 64 bits.
+ */
+static int test_tsendsgl_invalid_tag(int id)
+{
+	uint64_t tag = -1;
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rc = kfi_tsendsgl(tx, tx_sgt.sgl, NULL, tx_sgt.nents, loopback_addr,
 			 tag, tx);
 	if (!rc) {
 		LOG_ERR("Tagged send buffer should not have been posted");
@@ -1286,6 +1487,88 @@ err:
 	return rc;
 }
 
+/* Verify that tagged sgl recv with invalid tag bits is rejected. CXI
+ * provider does not support all 64 bits.
+ */
+static int test_trecvsgl_invalid_tag(int id)
+{
+	uint64_t tag = -1;
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rc = kfi_trecvsgl(rx, rx_sgt.sgl, NULL, rx_sgt.nents,
+			 KFI_ADDR_UNSPEC, tag, 0, rx);
+	if (!rc) {
+		LOG_ERR("Tagged recv buffer should not have been posted");
+		rc = -EIO;
+		goto err_cleanup;
+	}
+
+	if (rc != -EINVAL) {
+		LOG_ERR("Invalid RC: expected=%d got=%d", -EINVAL, rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
+/* Verify that tagged sgl recv with invalid ignore bits is rejected. CXI
+ * provider does not support all 64 bits.
+ */
+static int test_trecvsgl_invalid_ignore(int id)
+{
+	uint64_t ignore = -1;
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rc = kfi_trecvsgl(rx, rx_sgt.sgl, NULL, rx_sgt.nents,
+			 KFI_ADDR_UNSPEC, 0, ignore, rx);
+	if (!rc) {
+		LOG_ERR("Tagged recv buffer should not have been posted");
+		rc = -EIO;
+		goto err_cleanup;
+	}
+
+	if (rc != -EINVAL) {
+		LOG_ERR("Invalid RC: expected=%d got=%d", -EINVAL, rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
 /* Verify that tagged msg recv with invalid tag bits is rejected. CXI
  * provider does not support all 64 bits.
  */
@@ -1532,10 +1815,72 @@ err:
 	return rc;
 }
 
+
+/* Verify that tagged send message using sgl works. */
+static int test_tsendmsg_sgl(int id)
+{
+	uint64_t tag = 0x1234567;
+	struct kfi_msg_tagged rx_msg = {};
+	struct kfi_msg_tagged tx_msg = {};
+	int rc;
+
+	rc = test_init();
+	if (rc) {
+		LOG_ERR("Failed to initialize test: rc=%d", rc);
+		goto err;
+	}
+
+	rx_msg.type = KFI_SGL;
+	rx_msg.msg_sgl = rx_sgt.sgl;
+	rx_msg.iov_count = rx_sgt.nents;
+	rx_msg.addr = KFI_ADDR_UNSPEC;
+	rx_msg.tag = tag;
+	rx_msg.context = rx;
+
+	tx_msg.type = KFI_SGL;
+	tx_msg.msg_sgl = tx_sgt.sgl;
+	tx_msg.iov_count = tx_sgt.nents;
+	tx_msg.addr = loopback_addr;
+	tx_msg.tag = tag;
+	tx_msg.context = tx;
+
+	rc = kfi_trecvmsg(rx, &rx_msg, KFI_COMPLETION);
+	if (rc) {
+		LOG_ERR("Failed to post tagged receive buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	rc = kfi_tsendmsg(tx, &tx_msg, KFI_COMPLETION);
+	if (rc) {
+		LOG_ERR("Failed to post tagged send buffer: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+
+	rc = verify_events(tag);
+	if (rc) {
+		LOG_ERR("Failed to verify events: rc=%d", rc);
+		goto err_cleanup;
+	}
+
+	test_fini();
+
+	LOG_INFO("TEST %d PASSED: %s", id, __func__);
+
+	return 0;
+
+err_cleanup:
+	test_fini();
+err:
+	LOG_ERR("TEST %d FAILED: %s", id, __func__);
+
+	return rc;
+}
+
 static int __init test_module_init(void)
 {
 	int exit_rc = 0;
-	int test_id = 0;
+	int test_id = 1;
 	int rc;
 
 	rc = test_tsend_no_ignore(test_id);
@@ -1549,6 +1894,11 @@ static int __init test_module_init(void)
 	test_id++;
 
 	rc = test_tsendbv_no_ignore(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_tsendsgl_no_ignore(test_id);
 	if (rc)
 		exit_rc = rc;
 	test_id++;
@@ -1573,6 +1923,11 @@ static int __init test_module_init(void)
 		exit_rc = rc;
 	test_id++;
 
+	rc = test_tsendsgl_ignore(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
 	rc = test_tsendmsg_ignore(test_id);
 	if (rc)
 		exit_rc = rc;
@@ -1589,6 +1944,11 @@ static int __init test_module_init(void)
 	test_id++;
 
 	rc = test_tsendbv_invalid_tag(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_tsendsgl_invalid_tag(test_id);
 	if (rc)
 		exit_rc = rc;
 	test_id++;
@@ -1628,6 +1988,16 @@ static int __init test_module_init(void)
 		exit_rc = rc;
 	test_id++;
 
+	rc = test_trecvsgl_invalid_tag(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_trecvsgl_invalid_ignore(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
 	rc = test_trecvmsg_invalid_tag(test_id);
 	if (rc)
 		exit_rc = rc;
@@ -1649,6 +2019,11 @@ static int __init test_module_init(void)
 	test_id++;
 
 	rc = test_src_addr_no_matching_init(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_tsendmsg_sgl(test_id);
 	if (rc)
 		exit_rc = rc;
 	test_id++;

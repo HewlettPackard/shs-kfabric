@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2018 Cray Inc. All Rights Reserved.
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -15,6 +15,10 @@
 #include <linux/random.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
+#include <linux/scatterlist.h>
+#include <linux/dma-mapping.h>
+#include <kfabric.h>
+#include <kfi_endpoint.h>
 #include <kfi_errno.h>
 #include <test_common.h>
 
@@ -69,6 +73,12 @@ static atomic_t test_3_errors = ATOMIC_INIT(0);
 static atomic_t test_4_errors = ATOMIC_INIT(0);
 static atomic_t test_5_errors = ATOMIC_INIT(0);
 static atomic_t test_6_errors = ATOMIC_INIT(0);
+static atomic_t test_7_errors = ATOMIC_INIT(0);
+static atomic_t test_8_errors = ATOMIC_INIT(0);
+static atomic_t test_9_errors = ATOMIC_INIT(0);
+static atomic_t test_10_errors = ATOMIC_INIT(0);
+static atomic_t test_11_errors = ATOMIC_INIT(0);
+static atomic_t test_12_errors = ATOMIC_INIT(0);
 
 static void test_rx_cq_cb(struct kfid_cq *cq, void *context)
 {
@@ -669,6 +679,381 @@ err:
 	return rc;
 }
 
+static int test_send_vec(struct msg_thread_info *info, int type, size_t len, bool use_msg)
+{
+	struct kvec *recv_kvec = NULL;
+	struct kvec *send_kvec = NULL;
+	struct bio_vec *recv_bvec = NULL;
+	struct bio_vec *send_bvec = NULL;
+	void *tmp_recv_buf;
+	void *tmp_send_buf;
+	size_t recv_vec_cnt = 0;
+	size_t send_vec_cnt = 0;
+	struct sg_table *recv_sgt = NULL;
+	struct sg_table *send_sgt = NULL;
+	struct scatterlist *sg = NULL;
+	struct kfi_msg recv_msg = {};
+	struct kfi_msg send_msg = {};
+	struct kfid_cq *rx_cq = info->res->rx_cq[0];
+	struct kfid_cq *tx_cq = info->res->tx_cq[0];
+	struct kfid_ep *rx = info->res->rx[0];
+	struct kfid_ep *tx = info->res->tx[0];
+	struct device *device = info->res->device;
+	int rc;
+	int i;
+	struct kfi_cq_tagged_entry comp_event;
+	unsigned int event_count = 2;
+
+	if (type != KFI_KVEC && type != KFI_BVEC && type != KFI_SGL) {
+		LOG_ERR("Invalid iov type %d", type);
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/* Reset event counter. */
+	atomic_set(&info->event_cntr, 0);
+
+	/* Setup send/recv buffers. */
+	switch (type) {
+		case KFI_KVEC:
+			recv_kvec = alloc_iov(len, &recv_vec_cnt);
+			if (!recv_kvec) {
+				LOG_ERR("Failed to allocate kvec");
+				goto err;
+			}
+			send_kvec = alloc_iov(len, &send_vec_cnt);
+			if (!send_kvec) {
+				LOG_ERR("Failed to allocate kvec");
+				goto err_free_recv_vec;
+			}
+			for (i = 0; i < send_vec_cnt; i++)
+				get_random_bytes(send_kvec[i].iov_base, send_kvec[i].iov_len);
+			break;
+		case KFI_BVEC:
+		case KFI_SGL:
+		default:
+			recv_bvec = alloc_biov(len, &recv_vec_cnt, 0);
+			if (!recv_bvec) {
+				LOG_ERR("Failed to allocate bvec");
+				goto err;
+			}
+			send_bvec = alloc_biov(len, &send_vec_cnt,0);
+			if (!send_bvec) {
+				LOG_ERR("Failed to allocate kvec");
+				goto err_free_recv_vec;
+			}
+			for (i = 0; i < send_vec_cnt; i++) {
+				tmp_send_buf = page_to_virt(send_bvec[i].bv_page);
+				tmp_send_buf += send_bvec[i].bv_offset;
+				get_random_bytes(tmp_send_buf, send_bvec[i].bv_len);
+			}
+
+			recv_sgt = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
+			if (!recv_sgt) {
+				LOG_ERR("Failed to allocate sgt");
+				goto err_free_send_vec;
+			}
+
+			rc = sg_alloc_table(recv_sgt, recv_vec_cnt, GFP_KERNEL);
+			if (rc) {
+				LOG_ERR("Failed to populate sgt");
+				goto err_free_recv_sgt;
+			}
+
+			sg = recv_sgt->sgl;
+			for (i = 0; i < recv_vec_cnt; i++) {
+				sg_set_page(sg, recv_bvec[i].bv_page,
+					    recv_bvec[i].bv_len,
+					    recv_bvec[i].bv_offset);
+				sg = sg_next(sg);
+			}
+
+			rc = dma_map_sgtable(device, recv_sgt, DMA_BIDIRECTIONAL, 0);
+			if (rc) {
+				LOG_ERR("Failed to populate sgt");
+				goto err_free_recv_table;
+			}
+
+			send_sgt = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
+			if (!send_sgt) {
+				LOG_ERR("Failed to allocate sgt");
+				goto err_unmap_recv_sgt;
+			}
+
+			rc = sg_alloc_table(send_sgt, send_vec_cnt, GFP_KERNEL);
+			if (rc) {
+				LOG_ERR("Failed to populate sgt");
+				goto err_free_send_sgt;
+			}
+
+			sg = send_sgt->sgl;
+			for (i = 0; i < send_vec_cnt; i++) {
+				sg_set_page(sg, send_bvec[i].bv_page,
+					    send_bvec[i].bv_len,
+					    send_bvec[i].bv_offset);
+				sg = sg_next(sg);
+			}
+
+			rc = dma_map_sgtable(device, send_sgt, DMA_BIDIRECTIONAL, 0);
+			if (rc) {
+				LOG_ERR("Failed to populate sgt");
+				goto err_free_send_table;
+			}
+
+			break;
+	}
+
+	/* Post recv buffer. */
+	switch (type) {
+		case KFI_KVEC:
+			if (use_msg) {
+				recv_msg.type = KFI_KVEC;
+				recv_msg.msg_iov = recv_kvec;
+				recv_msg.desc = 0;
+				recv_msg.iov_count = recv_vec_cnt;
+				recv_msg.addr = 0;
+				recv_msg.context = info;
+				recv_msg.data = 0;
+				rc = kfi_recvmsg(rx, &recv_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_recvv(rx, recv_kvec, NULL, recv_vec_cnt, 0, info);
+			}
+			break;
+		case KFI_BVEC:
+			if (use_msg) {
+				recv_msg.type = KFI_BVEC;
+				recv_msg.msg_biov = recv_bvec;
+				recv_msg.desc = 0;
+				recv_msg.iov_count = recv_vec_cnt;
+				recv_msg.addr = 0;
+				recv_msg.context = info;
+				recv_msg.data = 0;
+				rc = kfi_recvmsg(rx, &recv_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_recvbv(rx, recv_bvec, NULL, recv_vec_cnt, 0, info);
+			}
+			break;
+		case KFI_SGL:
+			if (use_msg) {
+				recv_msg.type = KFI_SGL;
+				recv_msg.msg_sgl = recv_sgt->sgl;
+				recv_msg.desc = 0;
+				recv_msg.iov_count = recv_sgt->nents;
+				recv_msg.addr = 0;
+				recv_msg.context = info;
+				recv_msg.data = 0;
+				rc = kfi_recvmsg(rx, &recv_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_recvsgl(rx, recv_sgt->sgl, NULL, recv_sgt->nents, 0, info);
+			}
+		default:
+			break;
+	}
+
+	if (rc) {
+		LOG_ERR("Failed to post recv buffer of len=%lu", len);
+		goto err_unmap_send_sgt;
+	}
+
+	switch (type) {
+		case KFI_KVEC:
+			if (use_msg) {
+				send_msg.type = KFI_KVEC;
+				send_msg.msg_iov = send_kvec;
+				send_msg.desc = 0;
+				send_msg.iov_count = send_vec_cnt;
+				send_msg.addr = info->loopback->rx_addr[0];
+				send_msg.context = info;
+				send_msg.data = 0;
+				rc = kfi_sendmsg(tx, &send_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_sendv(tx, send_kvec, NULL, send_vec_cnt,
+					       info->loopback->rx_addr[0], info);
+			}
+			break;
+		case KFI_BVEC:
+			if (use_msg) {
+				send_msg.type = KFI_BVEC;
+				send_msg.msg_biov = send_bvec;
+				send_msg.desc = 0;
+				send_msg.iov_count = send_vec_cnt;
+				send_msg.addr = info->loopback->rx_addr[0];
+				send_msg.context = info;
+				send_msg.data = 0;
+				rc = kfi_sendmsg(tx, &send_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_sendbv(tx, send_bvec, NULL, send_vec_cnt,
+						info->loopback->rx_addr[0], info);
+			}
+			break;
+		case KFI_SGL:
+		default:
+			if (use_msg) {
+				send_msg.type = KFI_SGL;
+				send_msg.msg_sgl = send_sgt->sgl;
+				send_msg.desc = 0;
+				send_msg.iov_count = send_sgt->nents;
+				send_msg.addr = info->loopback->rx_addr[0];
+				send_msg.context = info;
+				send_msg.data = 0;
+				rc = kfi_sendmsg(tx, &send_msg, KFI_COMPLETION);
+			} else {
+				rc = kfi_sendsgl(tx, send_sgt->sgl, NULL, send_sgt->nents,
+						info->loopback->rx_addr[0], info);
+			}
+			break;
+	}
+
+	if (rc) {
+		LOG_ERR("Failed to post send buffer of len=%lu", len);
+		goto err_unpost_recv_vec;
+	}
+
+	/* Wait for two events (RECV and SEND). */
+	wait_event_timeout(wait_queue,
+			   atomic_read(&info->event_cntr) == event_count,
+			   2 * HZ);
+
+	/* Verify data integrity. */
+	rc = 0;
+	switch (type) {
+		case KFI_KVEC:
+			for (i = 0; i < send_vec_cnt; i++) {
+				rc = verify_data(recv_kvec[i].iov_base,
+						 send_kvec[i].iov_base,
+						 send_kvec[i].iov_len);
+				if (rc != -1)
+					break;
+			}
+			break;
+		case KFI_BVEC:
+		case KFI_SGL:
+		default:
+			for (i = 0; i < send_vec_cnt; i++) {
+				tmp_recv_buf = page_to_virt(recv_bvec[i].bv_page);
+				tmp_recv_buf += recv_bvec[i].bv_offset;
+				tmp_send_buf = page_to_virt(send_bvec[i].bv_page);
+				tmp_send_buf += send_bvec[i].bv_offset;
+				rc = verify_data(tmp_recv_buf,
+						 tmp_send_buf,
+						 send_bvec[i].bv_len);
+				if (rc != -1)
+					break;
+			}
+			break;
+	}
+
+	if (rc != -1) {
+		LOG_ERR("Data integrity error in at byte=%u", rc);
+		rc = -EIO;
+		goto err_unmap_send_sgt;
+	}
+
+	/* Verify send event. */
+	rc = test_process_tx_cq(tx_cq, info, false);
+	if (rc) {
+		LOG_ERR("Failed to process send event");
+		goto err_unmap_send_sgt;
+	}
+
+	/*
+	 * Read the CQ again to verify it is drained which will rearm the CQ
+	 * completion handler.
+	 */
+	rc = kfi_cq_read(tx_cq, &comp_event, 1);
+	if (rc != -EAGAIN) {
+		LOG_ERR("%s: CQ not drained", __func__);
+		rc = -EINVAL;
+		goto err_unmap_send_sgt;
+	}
+
+	/* Verify recv event. */
+	rc = test_process_rx_cq(rx_cq, info, len, false, 0);
+	if (rc) {
+		LOG_ERR("Failed to process recv event");
+		goto err_unmap_send_sgt;
+	}
+
+	/*
+	 * Read the CQ again to verify it is drained which will rearm the CQ
+	 * completion handler.
+	 */
+	rc = kfi_cq_read(rx_cq, &comp_event, 1);
+	if (rc != -EAGAIN) {
+		LOG_ERR("%s: CQ not drained", __func__);
+		rc = -EINVAL;
+		goto err_unmap_send_sgt;
+	}
+
+	/* Cleanup. */
+	switch (type) {
+		case KFI_KVEC:
+			free_iov(send_kvec, send_vec_cnt);
+			free_iov(recv_kvec, recv_vec_cnt);
+			break;
+		case KFI_BVEC:
+		case KFI_SGL:
+		default:
+			dma_unmap_sgtable(device, send_sgt, DMA_BIDIRECTIONAL, 0);
+			dma_unmap_sgtable(device, recv_sgt, DMA_BIDIRECTIONAL, 0);
+			sg_free_table(send_sgt);
+			sg_free_table(recv_sgt);
+			kfree(send_sgt);
+			kfree(recv_sgt);
+			free_biov(send_bvec, send_vec_cnt);
+			free_biov(recv_bvec, recv_vec_cnt);
+			break;
+	}
+
+	return 0;
+
+err_unpost_recv_vec:
+	kfi_cancel(&rx->fid, info);
+err_unmap_send_sgt:
+	if (type != KFI_KVEC)
+		dma_unmap_sgtable(device, send_sgt, DMA_BIDIRECTIONAL, 0);
+err_free_send_table:
+	if (type != KFI_KVEC)
+		sg_free_table(send_sgt);
+err_free_send_sgt:
+	if (type != KFI_KVEC)
+		kfree(send_sgt);
+err_unmap_recv_sgt:
+	if (type != KFI_KVEC)
+		dma_unmap_sgtable(device, recv_sgt, DMA_BIDIRECTIONAL, 0);
+err_free_recv_table:
+	if (type != KFI_KVEC)
+		sg_free_table(recv_sgt);
+err_free_recv_sgt:
+	if (type != KFI_KVEC)
+		kfree(recv_sgt);
+err_free_send_vec:
+	switch (type) {
+		case KFI_KVEC:
+			free_iov(send_kvec, send_vec_cnt);
+			break;
+		case KFI_BVEC:
+		case KFI_SGL:
+		default:
+			free_biov(send_bvec, send_vec_cnt);
+			break;
+	}
+err_free_recv_vec:
+	switch (type) {
+		case KFI_KVEC:
+			free_iov(recv_kvec, recv_vec_cnt);
+			break;
+		case KFI_BVEC:
+		case KFI_SGL:
+		default:
+			free_biov(recv_bvec, recv_vec_cnt);
+			break;
+	}
+err:
+	LOG_ERR("MSG %d thread %s failed: rc=%d", info->id, __func__, rc);
+	return rc;
+}
+
 static void test_1_single_pkt_msg(struct msg_thread_info *info)
 {
 	size_t len;
@@ -797,6 +1182,126 @@ static void test_6_single_pkt_multi_recv_msg_no_recv(struct msg_thread_info *inf
 
 }
 
+static void test_7_single_pkt_sendv(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_KVEC, len, false);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_7_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
+static void test_8_single_pkt_sendbv(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_BVEC, len, false);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_8_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
+static void test_9_single_pkt_sendsgl(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_SGL, len, false);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_9_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
+static void test_10_single_pkt_sendmsg_v(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_KVEC, len, true);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_10_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
+static void test_11_single_pkt_sendmsg_bv(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_BVEC, len, true);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_11_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
+static void test_12_single_pkt_sendmsg_sgl(struct msg_thread_info *info)
+{
+	size_t len;
+	int rc;
+
+	/* Generate a random length. */
+	get_random_bytes(&len, sizeof(len));
+	len = (len % SINGLE_PKT_SIZE) + 1;
+
+	LOG_INFO("MSG thread %d %s buf length=%lu", info->id, __func__, len);
+
+	rc = test_send_vec(info, KFI_SGL, len, true);
+	if (rc) {
+		LOG_ERR("MSG thread %d FAILED %s", info->id, __func__);
+		atomic_inc(&test_12_errors);
+	} else {
+		LOG_INFO("MSG thread %d PASSED %s", info->id, __func__);
+	}
+}
+
 static int test_run_thread(void *data)
 {
 	struct msg_thread_info *info = data;
@@ -815,6 +1320,12 @@ static int test_run_thread(void *data)
 			test_4_single_pkt_msg_no_tx_events(info);
 			test_5_single_pkt_msg_truncate(info);
 			test_6_single_pkt_multi_recv_msg_no_recv(info);
+			test_7_single_pkt_sendv(info);
+			test_8_single_pkt_sendbv(info);
+			test_9_single_pkt_sendsgl(info);
+			test_10_single_pkt_sendmsg_v(info);
+			test_11_single_pkt_sendmsg_bv(info);
+			test_12_single_pkt_sendmsg_sgl(info);
 		}
 
 		if (!kthread_should_stop()) {
@@ -1020,10 +1531,25 @@ static void __exit test_module_exit(void)
 		 atomic_read(&test_5_errors));
 	LOG_INFO("Test 6 (single pkt msg multi recv no recv evt) had %d errors",
 		 atomic_read(&test_6_errors));
+	LOG_INFO("Test 7 (single pkt sendv) had %d errors",
+		 atomic_read(&test_7_errors));
+	LOG_INFO("Test 8 (single pkt sendbv) had %d errors",
+		 atomic_read(&test_8_errors));
+	LOG_INFO("Test 9 (single pkt sendsgl) had %d errors",
+		 atomic_read(&test_9_errors));
+	LOG_INFO("Test 10 (single pkt sendmsg_v) had %d errors",
+		 atomic_read(&test_10_errors));
+	LOG_INFO("Test 11 (single pkt sendmsg_bv) had %d errors",
+		 atomic_read(&test_11_errors));
+	LOG_INFO("Test 12 (single pkt sendmsg_sgl) had %d errors",
+		 atomic_read(&test_12_errors));
 
 	if (atomic_read(&test_1_errors) || atomic_read(&test_2_errors) ||
 	    atomic_read(&test_3_errors) || atomic_read(&test_4_errors) ||
-	    atomic_read(&test_5_errors) || atomic_read(&test_6_errors))
+	    atomic_read(&test_5_errors) || atomic_read(&test_6_errors) ||
+	    atomic_read(&test_7_errors) || atomic_read(&test_8_errors) ||
+	    atomic_read(&test_9_errors) || atomic_read(&test_10_errors) ||
+	    atomic_read(&test_11_errors) || atomic_read(&test_12_errors))
 		LOG_ERR("TESTS FAILED");
 	else
 		LOG_ERR("ALL TESTS PASSED");

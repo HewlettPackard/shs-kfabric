@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Common CXI test header.
- * Copyright 2018,2022 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
  */
 
 #ifndef _TEST_COMMON_
@@ -54,6 +54,7 @@ struct sep_resource {
 	size_t tx_count;
 	size_t rx_count;
 	int rx_ctx_bits;
+	struct device *device;
 };
 
 /**

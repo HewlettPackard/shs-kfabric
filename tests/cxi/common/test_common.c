@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Common CXI test functions.
- * Copyright 2018,2022 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <test_common.h>
@@ -29,6 +29,7 @@
 struct sep_resource *sep_resource_alloc(const struct sep_resource_opts *opts)
 {
 	struct sep_resource *sep;
+	struct kfi_cxi_domain_ops *dom_ops;
 	void *context;
 	uint64_t bind_flags;
 	int i;
@@ -126,6 +127,17 @@ struct sep_resource *sep_resource_alloc(const struct sep_resource_opts *opts)
 	if (rc) {
 		LOG_ERR("kfi_domain failed: rc=%d", rc);
 		goto err_free_eq;
+	}
+
+	sep->device = NULL;
+	rc = kfi_open_ops(&sep->domain->fid, KFI_CXI_DOM_OPS_1, 0,
+				(void **)&dom_ops, NULL);
+	if (!rc) {
+		rc = dom_ops->get_device(&sep->domain->fid, &sep->device);
+		if (rc) {
+			LOG_ERR("get_device failed, rc=%d", rc);
+			goto err_free_domain;
+		}
 	}
 
 	if (opts->async_mr_events) {
@@ -763,6 +775,7 @@ int verify_data_biov(uint8_t *a, struct bio_vec *b, size_t count)
 		for (j = 0; j < b[i].bv_len; j++, cur_byte++) {
 			if (a[cur_byte] != cmp[j]) {
 				LOG_ERR("Data miscompare: byte=%lu", cur_byte);
+				LOG_ERR("buf=%x biov=%x", a[cur_byte], cmp[j]);
 				return cur_byte;
 			}
 		}
@@ -926,7 +939,7 @@ struct bio_vec *alloc_biov(size_t len, size_t *count, bool first_page_offset)
 	}
 
 	for (i = 0; i < iov_count; i++)
-		LOG_INFO("bvec %d size=%u", i, biov[i].bv_len);
+		LOG_INFO("bvec %d size=%u offset=%u", i, biov[i].bv_len, biov[i].bv_offset);
 
 	*count = iov_count;
 	return biov;
