@@ -9,6 +9,7 @@ obj-m := \
 	test_getinfo_fabric.o \
 	test_resource_mgmt.o \
 	test_getinfo.o \
+	test_getname.o \
 	test_fabric.o \
 	test_eq.o \
 	test_eq_thread.o \

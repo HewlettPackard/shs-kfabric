@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider endpoints.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2019-2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -223,6 +223,25 @@ static int kcxi_ep_rx_ctx(struct kfid_ep *sep, int index,
 	return 0;
 }
 
+static int kcxi_ep_cm_getname(struct kfid *fid, void *addr, size_t *addrlen)
+{
+	struct kcxi_ep *kcxi_ep = container_of(fid, struct kcxi_ep, ep.fid);
+	struct kcxi_addr *src_addr = (struct kcxi_addr *)addr;
+
+	if (*addrlen < sizeof(struct kcxi_addr))
+		return -KFI_ETOOSMALL;
+
+	if (!kcxi_ep->ep_attr.dom_if->dom)
+		return -KFI_EOPBADSTATE;
+
+	*addrlen = sizeof(struct kcxi_addr);
+	memset(addr, 0, *addrlen);
+	src_addr->pid = kcxi_ep->ep_attr.dom_if->dom->pid;
+	src_addr->nic = kcxi_ep->ep_attr.dom_if->kcxi_if->nic_addr;
+
+	return KFI_SUCCESS;
+}
+
 static struct kfi_ops kcxi_ep_fid_ops = {
 	.close = kcxi_ep_close,
 	.bind = kcxi_ep_bind,
@@ -240,7 +259,7 @@ static struct kfi_ops_ep kcxi_ep_ops = {
 
 static struct kfi_ops_cm kcxi_ep_cm_ops = {
 	.setname = kfi_no_setname,
-	.getname = kfi_no_getname,
+	.getname = kcxi_ep_cm_getname,
 	.getpeer = kfi_no_getpeer,
 	.connect = kfi_no_connect,
 	.listen = kfi_no_listen,
