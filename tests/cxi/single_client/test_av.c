@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2018 Cray Inc. All Rights Reserved.
+ * Copyright 2018,2025 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -531,7 +531,7 @@ static int test_av_single_add(int id)
 	}
 
 	kfi_av_straddr(av, &addr, buf, &len);
-	LOG_INFO("Registered Address: %s", buf);
+	LOG_INFO("Registered Address: %s\n", buf);
 
 	kfree(buf);
 
@@ -600,7 +600,7 @@ static int test_av_grow(int id)
 			goto out;
 		}
 
-		LOG_INFO("iziemba: kfi_addr=%llu\n", kfi_addr);
+		LOG_INFO("kfi_addr=%llu", kfi_addr);
 
 		rc = kfi_av_lookup(av, kfi_addr, &addr, &addr_len);
 		if (rc) {
@@ -621,7 +621,7 @@ static int test_av_grow(int id)
 		if (addr.pid != i) {
 			LOG_ERR("TEST %d %s FAILED: Failed to verify domain",
 				id, __func__);
-			LOG_ERR("Expected 32, got %d", addr.pid);
+			LOG_ERR("Expected %d, got %d", i, addr.pid);
 			exit_rc = -EINVAL;
 			goto out;
 		}
@@ -635,7 +635,7 @@ static int test_av_grow(int id)
 		}
 
 		kfi_av_straddr(av, &addr, buf, &len);
-		LOG_INFO("Registered Address: %s", buf);
+		LOG_INFO("Registered Address: %s\n", buf);
 
 		kfree(buf);
 		kfree(service);
@@ -716,6 +716,310 @@ static int test_av_remove(int id)
 	}
 
 out:
+	rc = kfi_close(&av->fid);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Unabled to close av", id, __func__);
+		return rc;
+	}
+
+	if (!exit_rc)
+		LOG_INFO("TEST %d %s PASSED", id, __func__);
+
+	return exit_rc;
+}
+
+static int test_av_insert_remove(int id)
+{
+	struct kfid_av *av;
+	struct kcxi_av *kcxi_av;
+	struct kfi_av_attr attr = {};
+	kfi_addr_t kfi_addr;
+	struct kcxi_addr addr_in = {};
+	struct kcxi_addr addr = {};
+	size_t addr_len = sizeof(addr);
+	char *buf;
+	size_t len = 50;
+	int rc;
+	int exit_rc = 0;
+
+	attr.type = KFI_AV_UNSPEC;
+
+	rc = kfi_av_open(domain, &attr, &av, NULL);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Unabled to open av", id, __func__);
+		return rc;
+	}
+
+	kcxi_av = container_of(av, struct kcxi_av, av_fid);
+
+	addr_in.nic = 2;
+	addr_in.pid = 32;
+	rc = kfi_av_insert(av, &addr_in, 1, &kfi_addr, 0, NULL);
+	if (rc < 0) {
+		LOG_ERR("TEST %d %s FAILED: Failed to insert address", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	rc = kfi_av_lookup(av, kfi_addr, &addr, &addr_len);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Failed to lookup address", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	if (addr.nic != 2) {
+		LOG_ERR("TEST %d %s FAILED: Failed to verify NIC", id,
+			__func__);
+		LOG_ERR("Expected 2, got %d", addr.nic);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	if (addr.pid != 32) {
+		LOG_ERR("TEST %d %s FAILED: Failed to verify pid", id,
+			__func__);
+		LOG_ERR("Expected 32, got %d", addr.pid);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	if (kfi_addr != 0) {
+		LOG_ERR("TEST %d %s FAILED: First inserted address should be 0",
+			id, __func__);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	if (kcxi_av->table_hdr->stored != 1) {
+		LOG_ERR("TEST %d %s FAILED: Table stored count should be 1", id,
+			__func__);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	buf = kzalloc(len, GFP_KERNEL);
+	if (!buf) {
+		LOG_ERR("TEST %d %s FAILED: Failed to allocated memory", id,
+			__func__);
+		exit_rc = -ENOMEM;
+		goto out;
+	}
+
+	kfi_av_straddr(av, &addr, buf, &len);
+	LOG_INFO("Registered Address: %s\n", buf);
+
+	kfree(buf);
+
+	rc = kfi_av_remove(av, &kfi_addr, 1, 0);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Failed to remove address", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	rc = kfi_av_lookup(av, kfi_addr, &addr, &addr_len);
+	if (!rc) {
+		LOG_ERR("TEST %d %s FAILED: Should not have lookup address", id,
+			__func__);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+out:
+	rc = kfi_close(&av->fid);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Unabled to close av", id, __func__);
+		return rc;
+	}
+
+	if (!exit_rc)
+		LOG_INFO("TEST %d %s PASSED", id, __func__);
+
+	return exit_rc;
+}
+
+#define ADDR_COUNT 4
+
+static int test_av_insert_remove_multiple(int id)
+{
+	struct kfid_av *av;
+	struct kcxi_av *kcxi_av;
+	struct kfi_av_attr attr = {};
+	kfi_addr_t kfi_addr[ADDR_COUNT];
+	struct kcxi_addr addr_in[ADDR_COUNT] = {};
+	struct kcxi_addr addr = {};
+	size_t addr_len = sizeof(addr);
+	char *buf = NULL;
+	size_t len = 50;
+	int i;
+	int rc;
+	int exit_rc = 0;
+
+	attr.type = KFI_AV_UNSPEC;
+	attr.count = 2;
+
+	/* Open the AV with just two available entries */
+	rc = kfi_av_open(domain, &attr, &av, NULL);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Unabled to open av", id, __func__);
+		return rc;
+	}
+
+	kcxi_av = container_of(av, struct kcxi_av, av_fid);
+
+	if (kcxi_av->table_hdr->size != 2) {
+		LOG_ERR("TEST %d %s FAILED: Table size incorrect", id,
+			__func__);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	/* Insert more than 2 addresses should cause the AV to grow */
+	for (i = 0; i < ADDR_COUNT; i++) {
+		addr_in[i].nic = 2;
+		addr_in[i].pid = i;
+	}
+
+	rc = kfi_av_insert(av, addr_in, ADDR_COUNT, kfi_addr, 0, NULL);
+	if (rc < 0) {
+		LOG_ERR("TEST %d %s FAILED: Failed to insert addresses", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	if (kcxi_av->table_hdr->size != ADDR_COUNT) {
+		LOG_ERR("TEST %d %s FAILED: Table did not grow as expected", id,
+			__func__);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < ADDR_COUNT; i++) {
+
+		LOG_INFO("kfi_addr[%d]=%llu", i, kfi_addr[i]);
+
+		rc = kfi_av_lookup(av, kfi_addr[i], &addr, &addr_len);
+		if (rc) {
+			LOG_ERR("TEST %d %s FAILED: Failed to lookup address",
+				id, __func__);
+			exit_rc = rc;
+			goto out;
+		}
+
+		if (addr.nic != 2) {
+			LOG_ERR("TEST %d %s FAILED: Failed to verify NIC", id,
+				__func__);
+			LOG_ERR("Expected 2, got %d", addr.nic);
+			exit_rc = -EINVAL;
+			goto out;
+		}
+
+		if (addr.pid != i) {
+			LOG_ERR("TEST %d %s FAILED: Failed to verify pid",
+				id, __func__);
+			LOG_ERR("Expected %d, got %d", i, addr.pid);
+			exit_rc = -EINVAL;
+			goto out;
+		}
+
+		buf = kzalloc(len, GFP_KERNEL);
+		if (!buf) {
+			LOG_ERR("TEST %d %s FAILED: Failed to allocated memory",
+				id, __func__);
+			exit_rc = -ENOMEM;
+			goto out;
+		}
+
+		kfi_av_straddr(av, &addr, buf, &len);
+		LOG_INFO("Registered Address: %s\n", buf);
+
+		kfree(buf);
+		buf = NULL;
+	}
+
+	if (kcxi_av->table_hdr->stored != ADDR_COUNT) {
+		LOG_ERR("TEST %d %s FAILED: Table stored count should be %d (%lld)",
+			id, __func__, ADDR_COUNT, kcxi_av->table_hdr->stored);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	/* Remove 2 addresses from the middle of the table */
+	for (i = 1; i < ADDR_COUNT - 1; i++) {
+		rc = kfi_av_remove(av, &kfi_addr[i], 1, 0);
+		if (rc) {
+			LOG_ERR("TEST %d %s FAILED: Failed to remove address", id,
+				__func__);
+			exit_rc = rc;
+			goto out;
+		}
+
+		rc = kfi_av_lookup(av, kfi_addr[i], &addr, &addr_len);
+		if (!rc) {
+			LOG_ERR("TEST %d %s FAILED: Should not have lookup address", id,
+				__func__);
+			exit_rc = -EINVAL;
+			goto out;
+		}
+	}
+
+	/* Insert an address, should use one of the newly available table entries */
+	rc = kfi_av_insert(av, &addr_in[2], 1, &kfi_addr[2], 0, NULL);
+	if (rc < 0) {
+		LOG_ERR("TEST %d %s FAILED: Failed to insert address", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	LOG_INFO("kfi_addr[%d]=%llu", 2, kfi_addr[2]);
+
+	rc = kfi_av_lookup(av, kfi_addr[2], &addr, &addr_len);
+	if (rc) {
+		LOG_ERR("TEST %d %s FAILED: Failed to lookup address", id,
+			__func__);
+		exit_rc = rc;
+		goto out;
+	}
+
+	if (addr.nic != addr_in[2].nic) {
+		LOG_ERR("TEST %d %s FAILED: Failed to verify NIC", id,
+			__func__);
+		LOG_ERR("Expected 2, got %d", addr.nic);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	if (addr.pid != addr_in[2].pid) {
+		LOG_ERR("TEST %d %s FAILED: Failed to verify pid", id,
+			__func__);
+		LOG_ERR("Expected %d, got %d", addr_in[2].pid, addr.pid);
+		exit_rc = -EINVAL;
+		goto out;
+	}
+
+	buf = kzalloc(len, GFP_KERNEL);
+	if (!buf) {
+		LOG_ERR("TEST %d %s FAILED: Failed to allocated memory",
+			id, __func__);
+		exit_rc = -ENOMEM;
+		goto out;
+	}
+
+	kfi_av_straddr(av, &addr, buf, &len);
+	LOG_INFO("Registered Address: %s\n", buf);
+
+	kfree(buf);
+	buf = NULL;
+
+out:
+	kfree(buf);
+
 	rc = kfi_close(&av->fid);
 	if (rc) {
 		LOG_ERR("TEST %d %s FAILED: Unabled to close av", id, __func__);
@@ -1039,6 +1343,16 @@ static int __init test_module_init(void)
 	test_id++;
 
 	rc = test_av_remove(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_av_insert_remove(test_id);
+	if (rc)
+		exit_rc = rc;
+	test_id++;
+
+	rc = test_av_insert_remove_multiple(test_id);
 	if (rc)
 		exit_rc = rc;
 	test_id++;

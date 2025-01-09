@@ -1,6 +1,6 @@
 /*
  * Cray kfabric CXI provider address vector.
- * Copyright 2019 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019,2025 Hewlett Packard Enterprise Development LP
  * SPDX-License-Identifier: GPL-2.0
  */
 #include <linux/slab.h>
@@ -49,7 +49,7 @@ static int kcxi_resize_av_table(struct kcxi_av *av)
 	if (rc)
 		return rc;
 
-	new_addr = krealloc(av->table_hdr, table_sz, GFP_ATOMIC);
+	new_addr = krealloc(av->table_hdr, table_sz, GFP_ATOMIC|__GFP_ZERO);
 	if (!new_addr)
 		return -ENOMEM;
 
@@ -419,7 +419,7 @@ static int kcxi_check_table_in_sync(struct kcxi_av *av, struct kcxi_addr *addr,
 
 	write_lock(&av->table_lock);
 
-	for (i = 0; i < count; i++, addr->nic++) {
+	for (i = 0; i < count; i++, addr++) {
 		/* Allocate an unused AV index. */
 		rc = kcxi_av_get_index(av);
 		if (rc < 0) {
@@ -523,6 +523,33 @@ static int kcxi_av_lookup(struct kfid_av *av, kfi_addr_t fi_addr, void *addr,
 err:
 	read_unlock(&_av->table_lock);
 	return -EINVAL;
+}
+
+
+static int kcxi_av_insert(struct kfid_av *av, const void *addr, size_t count,
+			  kfi_addr_t *kfi_addr, uint64_t flags, void *context)
+{
+	/*
+	 *  AV does not need to be checked since kfabric would have
+	 *  dereferenced. Leave all the other checking of pointers to the other
+	 *  functions.
+	 */
+	int rc;
+	struct kcxi_av *_av;
+
+	_av = container_of(av, struct kcxi_av, av_fid);
+
+	/* If AV is opened with KFI_EVENT flag, perform asynchronous address
+	 * resolution.
+	 */
+
+	if (_av->attr.flags & KFI_EVENT)
+		return -EINVAL;
+
+	rc = kcxi_check_table_in_sync(_av, (struct kcxi_addr *) addr, kfi_addr, count, flags,
+				      context);
+
+	return rc;
 }
 
 static int kcxi_av_insertsvc(struct kfid_av *av, const char *node,
@@ -655,7 +682,7 @@ static struct kfi_ops kcxi_av_kfi_ops = {
 };
 
 static struct kfi_ops_av kcxi_av_ops = {
-	.insert = kfi_no_av_insert,
+	.insert = kcxi_av_insert,
 	.insertsvc = kcxi_av_insertsvc,
 	.remove = kcxi_av_remove,
 	.lookup = kcxi_av_lookup,
