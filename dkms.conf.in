@@ -10,7 +10,7 @@ SHS_DKMS_BUILDROOT="$SHS_DKMS_PACKAGEROOT/build"
 # Fetch the Module.symvers for our dependencies, stored in the DKMS tree
 CXI_DRIVER_SYMVERS=${dkms_tree}/cray-cxi-driver/kernel-${kernelver}-${arch}/module/Module.symvers
 
-BUILD_DEPENDS=("cray-slingshot-base-link", "sl-driver", "cray-cxi-driver")
+BUILD_DEPENDS=("cray-slingshot-base-link" "sl-driver" "cray-cxi-driver")
 
 SHS_MAKE_ARGS=" \
         -C $kernel_source_dir \
