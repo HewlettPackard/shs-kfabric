@@ -20,8 +20,8 @@ SHS_MAKE_ARGS=" \
         KBUILD_EXTRA_SYMBOLS=${CXI_DRIVER_SYMVERS} \
 "
 
-MAKE="'make' ${SHS_MAKE_ARGS} modules"
-CLEAN="make ${SHS_MAKE_ARGS} clean"
+MAKE="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} modules"
+CLEAN="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} clean"
 AUTOINSTALL='yes'
 
 # Post-build hook to copy our Module.symvers into the DKMS tree so that other modules can build against it
