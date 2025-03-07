@@ -118,6 +118,7 @@ struct kcxi_domain_if *kcxi_domain_if_alloc(struct kcxi_if *kcxi_if,
 	kcxi_dom_if->pid = kcxi_dom_if->dom->pid;
 	kcxi_dom_if->auth_key = auth_key;
 
+	mutex_init(&kcxi_dom_if->lock);
 	atomic_set(&kcxi_dom_if->ref_cnt, 0);
 
 	atomic_inc(&kcxi_if->ref_cnt);
