@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2018-2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2018-2025 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -719,11 +719,13 @@ static int test_send_vec(struct msg_thread_info *info, int type, size_t len, boo
 			recv_kvec = alloc_iov(len, &recv_vec_cnt);
 			if (!recv_kvec) {
 				LOG_ERR("Failed to allocate kvec");
+				rc = -ENOMEM;
 				goto err;
 			}
 			send_kvec = alloc_iov(len, &send_vec_cnt);
 			if (!send_kvec) {
 				LOG_ERR("Failed to allocate kvec");
+				rc = -ENOMEM;
 				goto err_free_recv_vec;
 			}
 			for (i = 0; i < send_vec_cnt; i++)
@@ -735,11 +737,13 @@ static int test_send_vec(struct msg_thread_info *info, int type, size_t len, boo
 			recv_bvec = alloc_biov(len, &recv_vec_cnt, 0);
 			if (!recv_bvec) {
 				LOG_ERR("Failed to allocate bvec");
+				rc = -ENOMEM;
 				goto err;
 			}
 			send_bvec = alloc_biov(len, &send_vec_cnt,0);
 			if (!send_bvec) {
 				LOG_ERR("Failed to allocate kvec");
+				rc = -ENOMEM;
 				goto err_free_recv_vec;
 			}
 			for (i = 0; i < send_vec_cnt; i++) {
@@ -751,6 +755,7 @@ static int test_send_vec(struct msg_thread_info *info, int type, size_t len, boo
 			recv_sgt = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
 			if (!recv_sgt) {
 				LOG_ERR("Failed to allocate sgt");
+				rc = -ENOMEM;
 				goto err_free_send_vec;
 			}
 
@@ -846,7 +851,10 @@ static int test_send_vec(struct msg_thread_info *info, int type, size_t len, boo
 			} else {
 				rc = kfi_recvsgl(rx, recv_sgt->sgl, NULL, recv_sgt->nents, 0, info);
 			}
+			break;
 		default:
+			LOG_ERR("Invalid iov type %d", type);
+			rc = -EINVAL;
 			break;
 	}
 

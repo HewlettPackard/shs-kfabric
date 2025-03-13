@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider communication profile.
- * Copyright 2019-2022 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2022,2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -106,8 +106,10 @@ struct kcxi_cp *kcxi_cp_alloc(struct kcxi_if *kcxi_if, unsigned int auth_key,
 	cp = kcxi_cp_reuse(kcxi_if, auth_key, tc);
 	if (IS_ERR(cp)) {
 		cp = kcxi_cp_new(kcxi_if, auth_key, tc);
-		if (IS_ERR(cp))
+		if (IS_ERR(cp)) {
+			rc = PTR_ERR(cp);
 			goto err_unlock;
+		}
 	}
 
 	atomic_inc(&cp->ref_cnt);

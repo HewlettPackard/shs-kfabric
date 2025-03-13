@@ -1,6 +1,6 @@
 /*
  * Kfabric getinfo tests.
- * Copyright 2018-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2018-2025 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -27,7 +27,7 @@ MODULE_AUTHOR("Ian Ziemba");
 MODULE_DESCRIPTION("kfabric CXI kfi_getinfo() tests");
 MODULE_LICENSE("GPL v2");
 
-void display_info(struct kfi_info *info)
+static void display_info(struct kfi_info *info)
 {
 	LOG_INFO("Fabric Provider: %s", info->fabric_attr->prov_name);
 	LOG_INFO("Fabric Name: %s", info->fabric_attr->name);

@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2018 Cray Inc. All Rights Reserved.
+ * Copyright 2018,2025 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -17,6 +17,7 @@
 #include <linux/kthread.h>
 #include <linux/random.h>
 #include <linux/mm.h>
+#include <linux/vmalloc.h>
 
 #include "../../../prov/cxi/kcxi_prov.h"
 

@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider address resolution.
- * Copyright 2019-2023 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/inet.h>
 #include <linux/inetdevice.h>
@@ -395,7 +395,7 @@ static int kcxi_addr_res_service_dest(const char *service, size_t pid_granule)
  * Returns: On success, non-negative source NIC address. On error, negative
  * errno.
  */
-int kcxi_dest_node_to_src_nic(const char *node)
+static int kcxi_dest_node_to_src_nic(const char *node)
 {
 	int rc;
 	uint32_t src_nic;
@@ -451,7 +451,7 @@ error:
  *
  * Returns: On success, non-negative PID value. On error, negative errno.
  */
-int kcxi_addr_src_nic_to_pid(const char *service, uint32_t src_nic, bool dest)
+static int kcxi_addr_src_nic_to_pid(const char *service, uint32_t src_nic, bool dest)
 {
 	struct kcxi_dev *dev;
 	uint16_t pid;

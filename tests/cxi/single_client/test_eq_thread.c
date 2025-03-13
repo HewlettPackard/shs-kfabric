@@ -1,6 +1,6 @@
 /*
  * Kfabric fabric tests.
- * Copyright 2018 Cray Inc. All Rights Reserved.
+ * Copyright 2018,2025 Hewlett Packard Enterprise Development LP
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -54,7 +54,7 @@ static struct work_info rinfo[NUM_THREADS];
 static struct task_struct *readers[NUM_THREADS];
 static struct task_struct *writers[NUM_THREADS];
 
-void wakeup_event_handler(struct kfid_eq *eq, void *context)
+static void wakeup_event_handler(struct kfid_eq *eq, void *context)
 {
 	atomic_inc(&cb_count);
 	wake_up(&event_wait);

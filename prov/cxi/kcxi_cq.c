@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider completion queue.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019-2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -910,7 +910,7 @@ static int kcxi_cq_entries_alloc(struct kcxi_cq *cq)
  *
  * Return: 0 on success. Else, negative errno.
  */
-int kcxi_cq_free(struct kcxi_cq *cq)
+static int kcxi_cq_free(struct kcxi_cq *cq)
 {
 	if (!cq)
 		return -EINVAL;

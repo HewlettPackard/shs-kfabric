@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider receive operations.
- * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
+ * Copyright 2019-2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -291,7 +291,7 @@ static int kcxi_msg_rx_req_cb(struct kcxi_cq *cq, struct kcxi_req_state *req,
  *
  * Return: 0 on success. Else, kfabric negative errno.
  */
-ssize_t kcxi_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
+static ssize_t kcxi_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg,
 		     bool tagged, uint64_t flags)
 {
 	struct kcxi_rx_ctx *rx_ctx;
