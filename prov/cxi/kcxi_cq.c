@@ -1099,6 +1099,7 @@ static struct kcxi_cq *kcxi_cq_alloc(struct kcxi_domain *kcxi_dom,
 				     void *context)
 {
 	struct cxi_lni *lni;
+	struct cxi_md *cxi_md = NULL;
 	struct kcxi_cq *kcxi_cq;
 	struct cxi_eq *cxi_eq;
 	struct cxi_eq_attr eq_attr = {};
@@ -1178,11 +1179,24 @@ static struct kcxi_cq *kcxi_cq_alloc(struct kcxi_domain *kcxi_dom,
 		goto err_free_entries;
 	}
 
-	kcxi_cq->queue_md = kcxi_md_alloc(kcxi_dom->kcxi_if, NULL, kcxi_cq->queue,
-					  kcxi_cq->queue_len, 0, flags, false);
-	if (IS_ERR(kcxi_cq->queue_md)) {
-		rc = PTR_ERR(kcxi_cq->queue_md);
-		goto err_free_queue;
+	/* Call kcxi_md_alloc() for vmalloc'd queues which may not be physically
+	 * contiguous. Set the cxi_map bool to ensure the returned md includes a
+	 * valid md->mapped_md to avoid issues in cxi_eq_alloc() with vmalloc'd
+	 * queues.
+	 * Otherwise non-vmalloc'd queues are physically contiguous. Use the
+	 * CXI_EQ_PASSTHROUGH flag.
+	 */
+	if (is_vmalloc_addr(kcxi_cq->queue)) {
+		kcxi_cq->queue_md = kcxi_md_alloc(kcxi_dom->kcxi_if, NULL,
+						  kcxi_cq->queue, kcxi_cq->queue_len, 0, flags,
+						  false, true);
+		if (IS_ERR(kcxi_cq->queue_md)) {
+			rc = PTR_ERR(kcxi_cq->queue_md);
+			goto err_free_queue;
+		}
+		cxi_md = kcxi_cq->queue_md->mapped_md;
+	} else {
+		eq_attr.flags |= CXI_EQ_PASSTHROUGH;
 	}
 
 	eq_attr.queue = kcxi_cq->queue;
@@ -1199,10 +1213,8 @@ static struct kcxi_cq *kcxi_cq_alloc(struct kcxi_domain *kcxi_dom,
 
 	if (attr)
 		eq_attr.cpu_affinity = attr->signaling_vector;
-	if (kcxi_md_phys_mapping(kcxi_cq->queue_md))
-		eq_attr.flags |= CXI_EQ_PASSTHROUGH;
 
-	cxi_eq = cxi_eq_alloc(lni, kcxi_cq->queue_md->mapped_md, &eq_attr,
+	cxi_eq = cxi_eq_alloc(lni, cxi_md, &eq_attr,
 			      kcxi_cq_process_event, kcxi_cq,
 			      kcxi_cq_process_event, kcxi_cq);
 	if (IS_ERR(cxi_eq)) {
@@ -1218,7 +1230,7 @@ static struct kcxi_cq *kcxi_cq_alloc(struct kcxi_domain *kcxi_dom,
 
 	kcxi_md_cache_populate(kcxi_cq);
 
-	CQ_DEBUG(kcxi_cq, "CQ allocated");
+	CQ_DEBUG(kcxi_cq, "CQ allocated, queue_len = %lu", kcxi_cq->queue_len);
 
 	return kcxi_cq;
 
@@ -1230,6 +1242,8 @@ err_free_entries:
 	kcxi_cq_entries_free(kcxi_cq);
 err_free_cq:
 	kfree(kcxi_cq);
+
+	LOG_ERR("Failed to allocate CQ rc=%d", rc);
 
 	return ERR_PTR(rc);
 }

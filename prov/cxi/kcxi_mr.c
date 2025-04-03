@@ -791,7 +791,8 @@ int kcxi_mr_reg(struct kfid *fid, const void *buf, size_t len, uint64_t access,
 	if (access & KFI_REMOTE_WRITE)
 		map_flags |= CXI_MAP_WRITE;
 
-	md = kcxi_md_alloc(kcxi_dom->kcxi_if, NULL, buf, len, offset, map_flags, false);
+	md = kcxi_md_alloc(kcxi_dom->kcxi_if, NULL, buf, len, offset, map_flags,
+			   false, false);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto err;

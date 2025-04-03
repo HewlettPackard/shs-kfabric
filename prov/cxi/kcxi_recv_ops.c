@@ -44,7 +44,7 @@ static int kcxi_msg_rx_req_cb(struct kcxi_cq *cq, struct kcxi_req_state *req,
 		event_rc = event->tgt_short.return_code;
 		event_mlength = event->tgt_short.length;
 		auto_unlinked = event->tgt_short.auto_unlinked;
-		event_start = rx_desc->md->addr;
+		event_start = rx_desc->md->dma_addr;
 		initiator = event->tgt_short.initiator;
 		req->tag = event->tgt_short.match_bits;
 		header_data = event->tgt_short.header_data;
@@ -108,7 +108,7 @@ static int kcxi_msg_rx_req_cb(struct kcxi_cq *cq, struct kcxi_req_state *req,
 
 				if (rx_desc->multi_recv)
 					rx_desc->unlink_byte_count =
-						event_start - rx_desc->md->addr +
+						event_start - rx_desc->md->dma_addr +
 						event_mlength;
 			}
 
@@ -403,7 +403,7 @@ static ssize_t kcxi_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg
 	cmd.unrestricted_end_ro = 1;
 	cmd.buffer_id = rx_desc->buffer_id;
 	cmd.lac = md->lac;
-	cmd.start = md->addr;
+	cmd.start = md->dma_addr;
 	cmd.length = md->len;
 	cmd.match_id = match_id;
 	cmd.event_unlink_disable = 1;

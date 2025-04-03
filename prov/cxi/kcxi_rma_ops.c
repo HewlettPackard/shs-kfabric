@@ -167,7 +167,7 @@ static int kcxi_queue_rma(struct kcxi_tx_desc *tx_desc, uint64_t flags)
 	cmd.event_send_disable = 1;
 	cmd.dfa = dfa;
 	cmd.remote_offset = tx_desc->remote_offset;
-	cmd.local_addr = md->addr;
+	cmd.local_addr = md->dma_addr;
 	cmd.request_len = md->len;
 	cmd.eq = tx_ctx->send_cq->eq->eqn;
 	cmd.initiator =
