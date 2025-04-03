@@ -150,7 +150,7 @@ static int kcxi_queue_msg(struct kcxi_tx_desc *tx_desc, uint64_t flags)
 	cmd.lac = md->lac;
 	cmd.event_send_disable = 1;
 	cmd.dfa = dfa;
-	cmd.local_addr = md->addr;
+	cmd.local_addr = md->dma_addr;
 	cmd.request_len = md->len;
 	cmd.eq = tx_ctx->send_cq->eq->eqn;
 	cmd.initiator =

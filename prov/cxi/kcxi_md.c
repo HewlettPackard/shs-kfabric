@@ -61,18 +61,18 @@ void kcxi_md_destroy_cache(void)
  *
  * Return: On success, valid pointer. Else, NULL.
  */
-void *kcxi_md_to_va(struct kcxi_md *md, uint64_t cur_addr)
+void *kcxi_md_to_va(struct kcxi_md *md, dma_addr_t cur_addr)
 {
-	if (!md || cur_addr > (md->addr + md->len) || md->len == 0)
+	if (!md || cur_addr > (md->dma_addr + md->len) || md->len == 0)
 		return NULL;
 
 	/* Mapped MD is not allocated, use the user_addr to calculate VA. The
-	 * user_addr is the in the VA space. cur_addr and md->addr are in the
-	 * IOVA space. The offset of the cur_addr and md->addr determines the
+	 * user_addr is the in the VA space. cur_addr and md->dma_addr are in the
+	 * IOVA space. The offset of the cur_addr and md->dma_addr determines the
 	 * offset in the VA space.
 	 */
 	if (!md->mapped_md)
-		return (void *)(md->user_addr + (cur_addr - md->addr));
+		return (void *)(md->user_addr + (cur_addr - md->dma_addr));
 
 	/* VA is only set for non-IOV mapping. */
 	if (!md->mapped_md->va)
@@ -99,13 +99,18 @@ void kcxi_md_free(struct kcxi_md *md)
 		rc = cxi_unmap(md->mapped_md);
 		if (rc)
 			LOG_ERR("Failed to unmap buffer: rc=%d", rc);
+	} else if (md->page_mapped) {
+		dma_unmap_page(md->kcxi_if->dev->device, md->mapped_dma_addr,
+			       md->mapped_dma_len, DMA_BIDIRECTIONAL);
 	}
 
 	atomic_dec(&md->kcxi_if->md_cur_count);
 
-	KCXI_IF_DEBUG(md->kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u",
-		      md->addr, md->len, md->lac,
-		      atomic_read(&md->kcxi_if->md_cur_count));
+	KCXI_IF_DEBUG(md->kcxi_if,
+		      "user_addr=%llx dma_addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s",
+		      md->user_addr, md->dma_addr, md->len, md->lac,
+		      atomic_read(&md->kcxi_if->md_cur_count),
+		      md->is_cacheable ? "true" : "false");
 
 	kmem_cache_free(md_cache, md);
 }
@@ -128,13 +133,16 @@ static void kcxi_md_align_buffer(const void *buf, uintptr_t *va,
  * @md: MD
  * @kcxi_if: kCXI interface
  * @kcxi_cq: kCXI completion queue
+ * @aligned_user_addr: page aligned virtual address
+ * @aligned_dma_addr: page aligned dma address
  * @len: MD length
  * @offset: Offset into MD
- * @cachable: The md is cachable
+ * @lac: Logical Addressing Context use by MD
+ * @cachable: The MD is cachable
  */
 static void kcxi_md_init(struct kcxi_md *md, struct kcxi_if *kcxi_if,
 			 struct kcxi_cq *kcxi_cq,
-			 uint64_t aligned_user_addr, uint64_t aligned_dma_addr,
+			 uint64_t aligned_user_addr, dma_addr_t aligned_dma_addr,
 			 size_t len, uint64_t offset, uint8_t lac, bool cacheable)
 {
 	int count;
@@ -143,7 +151,7 @@ static void kcxi_md_init(struct kcxi_md *md, struct kcxi_if *kcxi_if,
 	md->kcxi_if = kcxi_if;
 	md->kcxi_cq = kcxi_cq;
 	md->len = len;
-	md->addr = aligned_dma_addr + offset;
+	md->dma_addr = aligned_dma_addr + offset;
 	md->lac = lac;
 	md->user_addr = aligned_user_addr + offset;
 	md->calling_cpu = smp_processor_id();
@@ -196,8 +204,8 @@ static int kcxi_md_cache_insert_md(struct kcxi_md *md)
 	atomic_inc(&md->kcxi_cq->md_cache.md_cached_avail);
 	spin_unlock(&md->kcxi_cq->md_cache.md_cache_list_lock);
 
-	CQ_DEBUG(md->kcxi_cq, "addr=%llx len=%lu lac=%u cached_avail=%u", md->addr,
-		      md->len, md->lac,
+	CQ_DEBUG(md->kcxi_cq, "dma_addr=%llx len=%lu lac=%u cached_avail=%u",
+		      md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_cq->md_cache.md_cached_avail));
 
 	return 0;
@@ -277,7 +285,7 @@ static struct kcxi_md *kcxi_md_cache_remove_md(struct kcxi_cq *kcxi_cq,
 
 	/* re-initialize md members that change with update */
 	md->len = md_info->len;
-	md->addr = md->mapped_md->iova + md_info->offset;
+	md->dma_addr = md->mapped_md->iova + md_info->offset;
 	md->user_addr = 0; /* set to 0 since md cache is only for kernel iova */
 	md->calling_cpu = smp_processor_id();
 
@@ -289,8 +297,8 @@ static struct kcxi_md *kcxi_md_cache_remove_md(struct kcxi_cq *kcxi_cq,
 			break;
 	} while (atomic_cmpxchg(&md->kcxi_cq->md_cache.md_cached_max, max, cur) != max);
 
-	CQ_DEBUG(kcxi_cq, "addr=%llx len=%lu lac=%u cached_avail=%u cached_max=%u",
-		      md->addr, md->len, md->lac,
+	CQ_DEBUG(kcxi_cq, "dma_addr=%llx len=%lu lac=%u cached_avail=%u cached_max=%u",
+		      md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_cq->md_cache.md_cached_avail),
 		      atomic_read(&md->kcxi_cq->md_cache.md_cached_max));
 
@@ -318,7 +326,8 @@ static int kcxi_md_cache_alloc_md(struct kcxi_cq *kcxi_cq)
 	/* Alloc the md without a buffer */
 	flags |= CXI_MAP_ALLOC_MD;
 
-	md = kcxi_md_alloc(kcxi_cq->domain->kcxi_if, kcxi_cq, 0, len, 0, flags, true);
+	md = kcxi_md_alloc(kcxi_cq->domain->kcxi_if, kcxi_cq, 0, len, 0, flags,
+			   true, false);
 	if (IS_ERR(md)) {
 		rc = PTR_ERR(md);
 		goto err;
@@ -429,7 +438,8 @@ struct kcxi_md *kcxi_md_sgl_alloc(struct kcxi_if *kcxi_if,
 
 	/* If no sgl or count is zero, treat as zero byte MD and use kcxi_md_alloc(). */
 	if (!sgl || count == 0)
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 
 	if (!sg_dma_address(sgl)) {
 		KCXI_IF_ERR(kcxi_if, "scatterlist not DMA mapped");
@@ -447,7 +457,8 @@ struct kcxi_md *kcxi_md_sgl_alloc(struct kcxi_if *kcxi_if,
 		goto err;
 	} else if (!nob) {
 		/* If no bytes, treat as zero byte MD. */
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 	}
 
 	/* Only the first sg (page) in the list can have an offset. */
@@ -488,8 +499,9 @@ struct kcxi_md *kcxi_md_sgl_alloc(struct kcxi_if *kcxi_if,
 	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
 		     md->mapped_md->lac, false);
 
-	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
-		      md->len, md->lac,
+	KCXI_IF_DEBUG(kcxi_if,
+		      "user_addr=%llx dma_addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s",
+		      md->user_addr, md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_if->md_cur_count),
 		      md->is_cacheable ? "true" : "false");
 
@@ -536,10 +548,12 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 
 	/* If IOV count is one or less, use kcxi_md_alloc(). */
 	if (count == 0) {
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 	} else if (count == 1) {
 		va = page_to_virt(biov[0].bv_page) + biov[0].bv_offset;
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, va, biov[0].bv_len, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, va, biov[0].bv_len, offset, flags,
+				     false, false);
 	}
 
 	nob = 0;
@@ -552,7 +566,8 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 		goto err;
 	} else if (!nob) {
 		/* If no bytes, treat as zero byte MD. */
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 	}
 
 	iov_iter_bvec(&iter, KF_ITER_BVEC, biov, count, nob);
@@ -588,8 +603,9 @@ struct kcxi_md *kcxi_md_biov_alloc(struct kcxi_if *kcxi_if,
 	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
 		     md->mapped_md->lac, false);
 
-	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
-		      md->len, md->lac,
+	KCXI_IF_DEBUG(kcxi_if,
+		      "user_addr=%llx dma_addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s",
+		      md->user_addr, md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_if->md_cur_count),
 		      md->is_cacheable ? "true" : "false");
 
@@ -637,11 +653,12 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 
 	/* If IOV count is one or less, use kcxi_md_alloc(). */
 	if (count == 0) {
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 	} else if (count == 1) {
 		va = (uintptr_t)iov[0].iov_base;
 		return kcxi_md_alloc(kcxi_if, kcxi_cq, (void *)va, iov[0].iov_len, offset,
-				     flags, false);
+				     flags, false, false);
 	}
 
 	nob = 0;
@@ -654,7 +671,8 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 		goto err;
 	} else if (!nob) {
 		/* If no bytes, treat as zero byte MD. */
-		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags, false);
+		return kcxi_md_alloc(kcxi_if, kcxi_cq, NULL, 0, offset, flags,
+				     false, false);
 	}
 
 	iov_iter_kvec(&iter, KF_ITER_KVEC, iov, count, nob);
@@ -692,8 +710,9 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 	kcxi_md_init(md, kcxi_if, kcxi_cq, 0, md->mapped_md->iova, md_info.len, md_info.offset,
 		     md->mapped_md->lac, false);
 
-	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
-		      md->len, md->lac,
+	KCXI_IF_DEBUG(kcxi_if,
+		      "user_addr=%llx dma_addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s",
+		      md->user_addr, md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_if->md_cur_count),
 		      md->is_cacheable ? "true" : "false");
 
@@ -715,18 +734,22 @@ err:
  * @offset: Offset into the buffer
  * @flags: CXI mapping flags
  * @cachable: The md is cachable
+ * @force_cxi_map: Force cxi_map() call for vmalloc'd buffer
  *
  * Return: Valid pointer on success. Else, error pointer.
  */
 struct kcxi_md *kcxi_md_alloc(struct kcxi_if *kcxi_if,
 			      struct kcxi_cq *kcxi_cq, const void *buf,
-			      size_t len, uint64_t offset, uint32_t flags, bool cacheable)
+			      size_t len, uint64_t offset, uint32_t flags,
+			      bool cacheable, bool force_cxi_map)
 {
 	struct kcxi_md *md;
 	uintptr_t va;
 	uint64_t va_offset;
 	size_t iova_len;
 	uint64_t md_offset;
+	struct page *page;
+	struct device *dma_dev = kcxi_if->dev->device;
 	int rc;
 
 	if (!kcxi_if || offset > len || (flags & CXI_MAP_USER_ADDR)) {
@@ -741,14 +764,6 @@ struct kcxi_md *kcxi_md_alloc(struct kcxi_if *kcxi_if,
 		goto err;
 	}
 
-	/* Only need to map if vmalloc address.
-	 * TODO: This is actually incorrect. If a IOMMU domain is allocated for
-	 * the PCIe device and the PCIe device is not passed through to a VM,
-	 * physical addresses cannot be used for DMA. The correct DMA address
-	 * needs to be retrieved used the DMA API. But, the struct device for
-	 * the PCIe device needs to be known. This is not exposed to the kCXI
-	 * provider.
-	 */
 	if (len) {
 		if (buf == NULL && flags & CXI_MAP_ALLOC_MD) {
 				md->mapped_md = cxi_map(kcxi_if->lni, 0,
@@ -764,50 +779,66 @@ struct kcxi_md *kcxi_md_alloc(struct kcxi_if *kcxi_if,
 				kcxi_md_init(md, kcxi_if, kcxi_cq, 0,
 					     md->mapped_md->iova, len,
 					     0, md->mapped_md->lac, cacheable);
-		} else if (is_vmalloc_addr(buf)) {
+		} else {
 			kcxi_md_align_buffer(buf, &va, &va_offset);
 
 			md_offset = offset + va_offset;
 			iova_len = len + md_offset;
 
-			/* IOVA length is page aligned. Since cxi_map is
-			 * expensive, only call this function if the address
-			 * spans multiple pages.
-			 */
-			if (iova_len <= PAGE_SIZE) {
-				/* TODO: Use DMA map API. */
-				kcxi_md_init(md, kcxi_if, kcxi_cq, va,
-					     PFN_PHYS(vmalloc_to_pfn(buf)), len,
-					     md_offset, kcxi_if->phys_lac, false);
-			} else {
-				if (!md_caching)
-					flags |= CXI_MAP_NOCACHE;
+			KCXI_IF_DEBUG(kcxi_if,
+				       "buf=%px, len=%lu, va=%lx, va_offset=%llu, iova_len=%lu",
+				       buf, len, va, va_offset, iova_len);
 
-				md->mapped_md = cxi_map(kcxi_if->lni, va,
-							iova_len, flags, NULL);
-				if (IS_ERR(md->mapped_md)) {
-					rc = PTR_ERR(md->mapped_md);
-					KCXI_IF_ERR(kcxi_if,
-						    "Failed to map IOV: rc=%d",
-						    rc);
-					goto err_free_md;
+			/* The iova_len variable is page aligned.
+			 * Since cxi_map() is expensive, only call cxi_map() if the buffer
+			 * is vmalloc'd and spans multiple pages. Otherwise, for best
+			 * performance dma map and use the physical LAC.
+			 */
+
+			if (is_vmalloc_addr(buf) && ((iova_len > PAGE_SIZE) || force_cxi_map)) {
+					if (!md_caching)
+						flags |= CXI_MAP_NOCACHE;
+
+					md->mapped_md = cxi_map(kcxi_if->lni, va,
+								iova_len, flags, NULL);
+					if (IS_ERR(md->mapped_md)) {
+						rc = PTR_ERR(md->mapped_md);
+						KCXI_IF_ERR(kcxi_if, "Failed to map IOV: rc=%d", rc);
+						goto err_free_md;
+					}
+
+					kcxi_md_init(md, kcxi_if, kcxi_cq, va,
+						     md->mapped_md->iova, len,
+						     md_offset, md->mapped_md->lac, cacheable);
+			} else {
+				if (is_vmalloc_addr(buf))
+					page = vmalloc_to_page(buf);
+				else
+					page = virt_to_page(buf);
+
+				md->mapped_dma_len = round_up(iova_len, PAGE_SIZE);
+				md->mapped_dma_addr = dma_map_page(dma_dev, page,
+						      0, md->mapped_dma_len, DMA_BIDIRECTIONAL);
+				md->page_mapped = true;
+
+				rc = dma_mapping_error(dma_dev, md->mapped_dma_addr);
+				if (rc) {
+					KCXI_IF_ERR(kcxi_if, "Failed to dma_map_page buf: rc=%d", rc);
+						    goto err_free_md;
 				}
 
 				kcxi_md_init(md, kcxi_if, kcxi_cq, va,
-					     md->mapped_md->iova, len,
-					     md_offset, md->mapped_md->lac, cacheable);
+					     md->mapped_dma_addr, len,
+					     md_offset, kcxi_if->phys_lac, false);
 			}
-		} else {
-			kcxi_md_init(md, kcxi_if, kcxi_cq, (uint64_t)buf,
-				     virt_to_phys((void *)buf), len, offset,
-				     kcxi_if->phys_lac, false);
 		}
 	} else {
 		kcxi_md_init(md, kcxi_if, kcxi_cq, 0, 0, 0, 0, kcxi_if->phys_lac, false);
 	}
 
-	KCXI_IF_DEBUG(kcxi_if, "addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s", md->addr,
-		      md->len, md->lac,
+	KCXI_IF_DEBUG(kcxi_if,
+		      "user_addr=%llx dma_addr=%llx len=%lu lac=%u md_cnt=%u cacheable=%s",
+		      md->user_addr, md->dma_addr, md->len, md->lac,
 		      atomic_read(&md->kcxi_if->md_cur_count),
 		      md->is_cacheable ? "true" : "false");
 

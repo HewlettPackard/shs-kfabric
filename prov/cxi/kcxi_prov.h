@@ -457,32 +457,37 @@ struct kcxi_domain_if {
 
 /**
  * struct kcxi_md - Memory descriptor.
- * @addr: Address used for DMA commands.
+ * @dma_addr: Address used for DMA commands.
  * @user_addr: User provided address.
  * @len: Length of the memory descriptor.
  * @lac: Local address context used for DMA commands.
  * @kcxi_if: Interface memory descriptor was allocated against.
+ * @kcxi_cq: Completion queue memory descriptor was allocated against.
  * @mapped_md: Mapped memory descriptor.
+ * @page_mapped: Buffer mapped with dma_map_page().
+ * @mapped_dma_addr: DMA address used for unmapping.
+ * @mapped_dma_len: DMA mapped length used for unmapping.
  * @calling_cpu: CPU ID MD allocation occurred on.
+ * @entry: Memory descriptor cache list entry.
+ * @is_cacheable: This memory descriptor is cachable.
+ * @sgt: Scatter gather table info for cachable memory descriptors.
  */
 struct kcxi_md {
-	uint64_t addr;
+	dma_addr_t dma_addr;
 	uint64_t user_addr;
 	size_t len;
 	uint8_t lac;
 	struct kcxi_if *kcxi_if;
 	struct kcxi_cq *kcxi_cq;
 	struct cxi_md *mapped_md;
+	bool page_mapped;
+	dma_addr_t mapped_dma_addr;
+	size_t mapped_dma_len;
 	int calling_cpu;
 	struct list_head entry;
 	bool is_cacheable;
 	struct sg_table sgt;
 };
-
-static inline bool kcxi_md_phys_mapping(struct kcxi_md *md)
-{
-	return !md->mapped_md;
-}
 
 /**
  * struct kcxi_md_cache - Memory descriptor cache.
@@ -1265,8 +1270,9 @@ struct kcxi_md *kcxi_md_iov_alloc(struct kcxi_if *kcxi_if,
 				  uint64_t offset, uint32_t flags);
 struct kcxi_md *kcxi_md_alloc(struct kcxi_if *kcxi_if,
 			      struct kcxi_cq *kcxi_cq, const void *buf,
-			      size_t len, uint64_t offset, uint32_t flags, bool cacheable);
-void *kcxi_md_to_va(struct kcxi_md *md, uint64_t cur_addr);
+			      size_t len, uint64_t offset, uint32_t flags,
+			      bool cacheable, bool force_cxi_map);
+void *kcxi_md_to_va(struct kcxi_md *md, dma_addr_t cur_addr);
 int kcxi_md_init_cache(void);
 void kcxi_md_destroy_cache(void);
 

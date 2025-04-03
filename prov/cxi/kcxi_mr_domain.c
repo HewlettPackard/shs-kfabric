@@ -131,7 +131,7 @@ int kcxi_mr_domain_link(struct kcxi_mr_domain *mr_domain, struct kcxi_mr *mr)
 	cmd.no_truncate = 1;
 	cmd.buffer_id = mr->buffer_id;
 	cmd.lac = mr->md->lac;
-	cmd.start = mr->md->addr;
+	cmd.start = mr->md->dma_addr;
 	cmd.length = mr->md->len;
 	cmd.match_bits = mr->mr_fid.key | KCXI_MR_MATCH_VALUE |
 		KCXI_PROV_VERSION_BITS(KCXI_PROV_MAJOR_VERSION);
