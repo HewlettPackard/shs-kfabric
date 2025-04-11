@@ -704,7 +704,7 @@ err:
 static int test_send_one_vec_uncached(int id, int type)
 {
 	int buf_len;
-	int offset = 0;
+	int offset;
 	int rc = 0;
 
 	LOG_INFO("TEST %d STARTED: %s", id, __func__);
@@ -713,13 +713,25 @@ static int test_send_one_vec_uncached(int id, int type)
 
 	/* a vec of a partial page */
 	buf_len = PAGE_SIZE/2;
+	offset = 0;
 	rc = test_send_recv_vec(id, type, 1, buf_len, offset, true, false);
 	if (rc) {
 		goto err;
 	}
 
+	/* a vec of a partial page with offset, use BVEC */
+	if (type == KFI_BVEC) {
+		buf_len = PAGE_SIZE/2;
+		offset = PAGE_SIZE/4;
+		rc = test_send_recv_vec(id, type, 1, buf_len, offset, true, false);
+		if (rc) {
+			goto err;
+		}
+	}
+
 	/* a vec of a full page */
 	buf_len = PAGE_SIZE;
+	offset = 0;
 	rc = test_send_recv_vec(id, type, 1, buf_len, offset, true, false);
 	if (rc) {
 		goto err;
