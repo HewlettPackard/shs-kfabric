@@ -477,6 +477,15 @@ int kcxi_mr_regsgl(struct kfid *fid, const struct scatterlist *sgl, size_t count
 	}
 
 	/*
+	 * Per kfabric Programmer's Manual, this parameter is reserved for future
+	 * use and must be 0.
+	 */
+	if (offset) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/*
 	 * Don't support MR flags. In the future, when a MR can be bound to a
 	 * completion queue, the need for KFI_RMA_EVENT may be needed.
 	 */
@@ -556,6 +565,15 @@ int kcxi_mr_regbv(struct kfid *fid, const struct bio_vec *biov, size_t count,
 	int rc;
 
 	if (!mr) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/*
+	 * Per kfabric Programmer's Manual, this parameter is reserved for future
+	 * use and must be 0.
+	 */
+	if (offset) {
 		rc = -EINVAL;
 		goto err;
 	}
@@ -645,6 +663,15 @@ int kcxi_mr_regv(struct kfid *fid, const struct kvec *iov, size_t count,
 	}
 
 	/*
+	 * Per kfabric Programmer's Manual, this parameter is reserved for future
+	 * use and must be 0.
+	 */
+	if (offset) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/*
 	 * Don't support MR flags. In the future, when a MR can be bound to a
 	 * completion queue, the need for KFI_RMA_EVENT may be needed.
 	 */
@@ -723,6 +750,15 @@ int kcxi_mr_reg(struct kfid *fid, const void *buf, size_t len, uint64_t access,
 	int rc;
 
 	if (!mr) {
+		rc = -EINVAL;
+		goto err;
+	}
+
+	/*
+	 * Per kfabric Programmer's Manual, this parameter is reserved for future
+	 * use and must be 0.
+	 */
+	if (offset) {
 		rc = -EINVAL;
 		goto err;
 	}
