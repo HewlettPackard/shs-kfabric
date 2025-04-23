@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider domain interface.
- * Copyright 2019,2021-2022 Hewlett Packard Enterprise Development LP. All rights reserved.
+ * Copyright 2019,2021-2022,2025 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 
@@ -86,10 +86,14 @@ struct kcxi_domain_if *kcxi_domain_if_alloc(struct kcxi_if *kcxi_if,
 		goto err;
 	}
 
+	rc = kcxi_get_rx_profile(kcxi_if, auth_key);
+	if (rc)
+		goto err_free_dom_if;
+
 	kcxi_dom_if->dom = cxi_domain_alloc(kcxi_if->lni, auth_key, pid);
 	if (IS_ERR(kcxi_dom_if->dom)) {
 		rc = PTR_ERR(kcxi_dom_if->dom);
-		goto err_free_dom_if;
+		goto err_free_rx_profile;
 	}
 
 	kcxi_dom_if->max_index = kcxi_if->dev->pid_granule / 2 - 1;
@@ -131,6 +135,8 @@ err_free_dom_bitmap:
 	kfree(kcxi_dom_if->index_bitmap);
 err_free_dom:
 	cxi_domain_free(kcxi_dom_if->dom);
+err_free_rx_profile:
+	kcxi_put_rx_profile(kcxi_if, auth_key);
 err_free_dom_if:
 	kfree(kcxi_dom_if);
 err:
@@ -157,6 +163,8 @@ int kcxi_domain_if_free(struct kcxi_domain_if *kcxi_dom_if)
 	atomic_dec(&kcxi_dom_if->kcxi_if->ref_cnt);
 
 	kfree(kcxi_dom_if->index_bitmap);
+
+	kcxi_put_rx_profile(kcxi_dom_if->kcxi_if, kcxi_dom_if->dom->vni);
 
 	cxi_domain_free(kcxi_dom_if->dom);
 

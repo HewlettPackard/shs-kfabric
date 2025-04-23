@@ -25,6 +25,7 @@ kfi_cxi-objs := \
 	kcxi_cq.o \
 	kcxi_domain.o \
 	kcxi_fabric.o \
+	kcxi_profile.o \
 	kcxi_prov.o
 ccflags-y += \
 	-I$(src)/../../include \
