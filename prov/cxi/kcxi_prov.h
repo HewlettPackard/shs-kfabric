@@ -231,6 +231,8 @@ static inline bool is_locally_admin_mac_addr(u64 mac_addr)
 #define KCXI_DOM_RX_CTX_MAX KCXI_MAX_RX_CTX
 #define KCXI_DOM_BUF_RES 4096
 #define KCXI_DOM_BUF_MAX C_LPE_STS_LIST_ENTRIES_ENTRIES
+#define KCXI_LE_MAX (KCXI_DOM_BUF_MAX / 4)
+#define KCXI_LE_RES(size) ((size + 3) / 4)
 
 /*
  * DMA commands use 32 bits for length. This is the upper bound for transfer
@@ -409,7 +411,6 @@ struct kcxi_if {
 	struct list_head cp_list;
 	struct mutex cp_lock;
 	atomic_t cp_cnt;
-	int svc_id;
 	struct cxi_rgroup *rgroup;
 	struct mutex rxp_lock;
 	struct mutex txp_lock;
