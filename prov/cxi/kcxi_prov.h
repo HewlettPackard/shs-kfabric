@@ -18,7 +18,7 @@
 #include <kfi_cm.h>
 #include <kfi_atomic.h>
 #include <kfi_cxi_ext.h>
-#include <linux/cxi.h>
+#include <linux/cxi/cxi.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
