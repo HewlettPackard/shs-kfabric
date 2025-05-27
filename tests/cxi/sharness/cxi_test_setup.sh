@@ -24,16 +24,16 @@ cxi_test_setup() {
 	"
 
 	test_expect_success "Inserting CXI driver" "
-		insmod ${TOP_DIR}/cxi-driver/cxi/cxi-ss1.ko disable_default_svc=0
+		insmod ${TOP_DIR}/cxi-driver/drivers/net/ethernet/hpe/ss1/cxi-ss1.ko disable_default_svc=0
 	"
 
 	test_expect_success "Inserting CXI Ethernet" "
-		insmod ${TOP_DIR}/cxi-driver/cxi/cxi-eth.ko &&
+		insmod ${TOP_DIR}/cxi-driver/drivers/net/ethernet/hpe/ss1/cxi-eth.ko &&
 		[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 	"
 
 	test_expect_success "Inserting CXI user" "
-		insmod ${TOP_DIR}/cxi-driver/cxi/cxi-user.ko &&
+		insmod ${TOP_DIR}/cxi-driver/drivers/net/ethernet/hpe/ss1/cxi-user.ko &&
 		[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 	"
 

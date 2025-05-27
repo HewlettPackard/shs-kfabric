@@ -42,7 +42,7 @@ $(__END_OF_LIST__)
 all: build
 
 build:
-	$(MAKE) -C $(KDIR) M=$(PWD) KBUILD_EXTRA_SYMBOLS=$(PWD)/../cxi-driver/cxi/Module.symvers modules
+	$(MAKE) -C $(KDIR) M=$(PWD) KBUILD_EXTRA_SYMBOLS=$(PWD)/../cxi-driver/drivers/net/ethernet/hpe/ss1/Module.symvers modules
 
 install:
 	$(MAKE) INSTALL_MOD_DIR=$(INSTALL_MOD_DIR) -C $(KDIR) M=$(PWD) modules_install
