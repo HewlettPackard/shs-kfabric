@@ -1,1 +1,1 @@
-KERNEL=="cxi_ss1", SUBSYSTEM=="module", ACTION=="add", RUN+="/sbin/modprobe kfi_cxi"
+KERNEL=="cxi_ss1", SUBSYSTEM=="module", ACTION=="add", RUN+="/sbin/modprobe --use-blacklist kfi_cxi"
