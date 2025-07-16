@@ -6,9 +6,6 @@ KFAB_DIR=$(realpath ../../../../)
 CXI_ETH_INTERFACE=""
 
 cxi_test_setup() {
-	modprobe ptp
-	modprobe iommu_v2  >/dev/null 2>/dev/null || modprobe amd_iommu_v2  >/dev/null 2>/dev/null
-
 	test_expect_success "One device is present" "
 		[ $(lspci -n | grep -c -e '17db:0501' -e '1590:0371') -eq 1 ]
 	"
