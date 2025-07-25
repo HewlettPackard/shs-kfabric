@@ -9,7 +9,7 @@
 
 #include "kcxi_prov.h"
 
-MODULE_AUTHOR("Ian Ziemba");
+MODULE_AUTHOR("HPE");
 MODULE_DESCRIPTION("Open Fabric Interface kCXI Provider");
 MODULE_LICENSE("GPL v2");
 

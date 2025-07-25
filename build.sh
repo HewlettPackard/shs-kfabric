@@ -19,4 +19,3 @@ fi
 
 setup_dst_env
 dst_build_rpm -c ${CE_BUILD_SCRIPT_REPO}/build/configs/kfabric.yaml $@
-
