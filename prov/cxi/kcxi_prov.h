@@ -410,11 +410,6 @@ struct kcxi_if {
 	struct mutex cp_lock;
 	atomic_t cp_cnt;
 	int svc_id;
-	struct cxi_rgroup *rgroup;
-	struct mutex rxp_lock;
-	struct mutex txp_lock;
-	struct list_head tx_profile_list;
-	struct list_head rx_profile_list;
 	unsigned int nic_addr;
 
 	/* Software counters. */
@@ -437,17 +432,6 @@ struct kcxi_cp {
 	atomic_t ref_cnt;
 };
 
-struct kcxi_tx_profile {
-	struct list_head entry;
-	struct kcxi_if *kcxi_if;
-	struct cxi_tx_profile *tx_profile;
-};
-
-struct kcxi_rx_profile {
-	struct list_head entry;
-	struct kcxi_if *kcxi_if;
-	struct cxi_rx_profile *rx_profile;
-};
 
 /**
  * struct kcxi_domain_if - kCXI domain interface
@@ -1353,14 +1337,6 @@ struct kcxi_domain_if *kcxi_domain_if_alloc(struct kcxi_if *kcxi_if,
 					    unsigned int auth_key,
 					    unsigned int pid);
 int kcxi_domain_if_free(struct kcxi_domain_if *cxi_dom_if);
-
-/* Functions in kcxi_profile.c */
-int kcxi_get_tx_profile(struct kcxi_if *kcxi_if, unsigned int vni);
-void kcxi_put_tx_profile(struct kcxi_if *kcxi_if, unsigned int vni);
-void kcxi_tx_profiles_cleanup(struct kcxi_if *kcxi_if);
-int kcxi_get_rx_profile(struct kcxi_if *kcxi_if, unsigned int vni);
-void kcxi_put_rx_profile(struct kcxi_if *kcxi_if, unsigned int vni);
-void kcxi_rx_profiles_cleanup(struct kcxi_if *kcxi_if);
 
 /* Functions in kcxi_recv_ops.c */
 ssize_t kcxi_msg_recvmsg(struct kfid_ep *ep, const struct kfi_msg *msg,

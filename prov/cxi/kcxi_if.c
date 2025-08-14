@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: GPL-2.0
 /*
  * Cray kfabric CXI provider interface.
- * Copyright 2019-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2019-2024 Hewlett Packard Enterprise Development LP
  */
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -139,7 +139,6 @@ struct kcxi_if *kcxi_if_alloc(unsigned int nic, const struct kfid_fabric *fabric
 		 .is_system_svc = true,
 	};
 	struct cxi_svc_fail_info fail_info = {};
-	uint16_t auth_key = *(info->domain_attr->auth_key);
 
 	/* Override default resource limit parameters */
 	if (fabric) {
@@ -176,12 +175,8 @@ struct kcxi_if *kcxi_if_alloc(unsigned int nic, const struct kfid_fabric *fabric
 
 	atomic_set(&kcxi_if->ref_cnt, 0);
 
-	INIT_LIST_HEAD(&kcxi_if->tx_profile_list);
-	INIT_LIST_HEAD(&kcxi_if->rx_profile_list);
 	INIT_LIST_HEAD(&kcxi_if->cp_list);
 	mutex_init(&kcxi_if->cp_lock);
-	mutex_init(&kcxi_if->rxp_lock);
-	mutex_init(&kcxi_if->txp_lock);
 	atomic_set(&kcxi_if->cp_cnt, 0);
 
 	lock_idx = srcu_read_lock(&kdev->dev_lock);
@@ -211,25 +206,10 @@ struct kcxi_if *kcxi_if_alloc(unsigned int nic, const struct kfid_fabric *fabric
 	}
 	kcxi_if->svc_id = rc;
 
-	rc = kcxi_get_rx_profile(kcxi_if, auth_key);
-	if (rc && rc != -EEXIST) {
-		LOG_INFO("Unable to allocate RX profile auth_key:%d rc:%d",
-			 auth_key, rc);
-		goto err_free_svc;
-	}
-
-	rc = kcxi_get_tx_profile(kcxi_if, auth_key);
-	if (rc && rc != -EEXIST) {
-		LOG_INFO("Unable to allocate TX profile auth_key:%d rc:%d",
-			 auth_key, rc);
-		goto err_free_rx_profile;
-	}
-
-	LOG_INFO("");
 	kcxi_if->lni = cxi_lni_alloc(cdev, kcxi_if->svc_id);
 	if (IS_ERR(kcxi_if->lni)) {
 		rc = PTR_ERR(kcxi_if->lni);
-		goto err_free_tx_profile;
+		goto err_free_svc;
 	}
 
 	rc = cxi_phys_lac_alloc(kcxi_if->lni);
@@ -265,10 +245,6 @@ struct kcxi_if *kcxi_if_alloc(unsigned int nic, const struct kfid_fabric *fabric
 
 err_free_lni:
 	cxi_lni_free(kcxi_if->lni);
-err_free_tx_profile:
-	kcxi_put_tx_profile(kcxi_if, auth_key);
-err_free_rx_profile:
-	kcxi_put_rx_profile(kcxi_if, auth_key);
 err_free_svc:
 	cxi_svc_destroy(cdev, kcxi_if->svc_id);
 err_unlock:
@@ -308,9 +284,6 @@ int kcxi_if_free(struct kcxi_if *kcxi_if)
 	cxi_lni_free(kcxi_if->lni);
 
 	cdev = srcu_dereference(kdev->dev, &kdev->dev_lock);
-
-	kcxi_tx_profiles_cleanup(kcxi_if);
-	kcxi_rx_profiles_cleanup(kcxi_if);
 	cxi_svc_destroy(cdev, kcxi_if->svc_id);
 
 	kfree(kcxi_if);
