@@ -165,9 +165,7 @@ int kcxi_alloc_rgroup_rsrcs(struct cxi_dev *cdev, struct kcxi_if *kcxi_if,
 	if (rc)
 		goto err;
 
-	rc = cxi_rgroup_enable(rgroup);
-	if (rc)
-		goto err;
+	cxi_rgroup_enable(rgroup);
 
 	kcxi_if->rgroup = rgroup;
 
