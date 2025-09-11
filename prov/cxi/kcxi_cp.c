@@ -28,14 +28,10 @@ static struct kcxi_cp *kcxi_cp_new(struct kcxi_if *kcxi_if,
 		goto err;
 	}
 
-	rc = kcxi_get_tx_profile(kcxi_if, auth_key);
-	if (rc)
-		goto err_free_cp;
-
 	cp->cp = cxi_cp_alloc(kcxi_if->lni, auth_key, tc, CXI_TC_TYPE_DEFAULT);
 	if (IS_ERR(cp->cp)) {
 		rc = PTR_ERR(cp->cp);
-		goto err_free_tx_profile;
+		goto err_free_cp;
 	}
 
 	cp->kcxi_if = kcxi_if;
@@ -49,8 +45,6 @@ static struct kcxi_cp *kcxi_cp_new(struct kcxi_if *kcxi_if,
 
 	return cp;
 
-err_free_tx_profile:
-	kcxi_put_tx_profile(kcxi_if, auth_key);
 err_free_cp:
 	kfree(cp);
 err:
@@ -159,7 +153,7 @@ void kcxi_cp_free(struct kcxi_cp *cp)
 		atomic_dec(&cp->kcxi_if->ref_cnt);
 
 		list_del(&cp->entry);
-		kcxi_put_tx_profile(kcxi_if, cp->cp->vni);
+
 		cxi_cp_free(cp->cp);
 
 		kfree(cp);
