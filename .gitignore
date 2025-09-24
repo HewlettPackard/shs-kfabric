@@ -86,3 +86,4 @@ tests/cxi/sharness/test_cmd.sh
 tests/cxi/sharness/tmptests/*
 tests/cxi/sharness/*.dbg
 tests/cxi/sharness/output/*
+tests/cxi/*/*.mod
