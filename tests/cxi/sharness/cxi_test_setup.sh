@@ -17,7 +17,7 @@ cxi_test_setup() {
 	"
 
 	test_expect_success "Inserting SSLINK" "
-		insmod ${TOP_DIR}/sl-driver/knl/cxi-sl.ko
+		insmod ${TOP_DIR}/sl-driver/drivers/net/ethernet/hpe/sl/cxi-sl.ko
 	"
 
 	test_expect_success "Inserting CXI driver" "
