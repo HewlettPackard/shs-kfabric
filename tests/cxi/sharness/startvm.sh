@@ -50,7 +50,7 @@ if [[ $HYP -eq 0 ]]; then
 	# First VM needs more memory to launch nested VMs
 	# Only the first VM will have the Cassini qemu device. Nested VMs will
 	# have VFs exported to them
-	QEMU_OPTS="$QEMU_OPTS -m 1024"
+	QEMU_OPTS="$QEMU_OPTS -m 2G"
 
 	if [[ -n $QEMU_MOPTS ]]; then
 		QEMU_OPTS="$QEMU_OPTS $QEMU_MOPTS"
