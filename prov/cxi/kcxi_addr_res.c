@@ -10,7 +10,7 @@
 
 #include "kcxi_prov.h"
 
-#define MAC_ADDR_TO_NIC_ADDR(mac) ((mac) & 0xFFFFF)
+#define ALGO_MAC_ADDR_TO_NIC_ADDR(mac) ((mac) & 0xFFFFF)
 
 /* Default destination PID is zero. */
 #define DEFAULT_DEST_PID 0
@@ -106,7 +106,7 @@ static int kcxi_src_to_nic_addr(__be32 src_addr)
 
 	rtnl_unlock();
 
-	nic_addr = MAC_ADDR_TO_NIC_ADDR(mac_addr);
+	nic_addr = ALGO_MAC_ADDR_TO_NIC_ADDR(mac_addr);
 
 	LOG_DEBUG("Resolved src IPv4 address (%pI4) to NIC address (%#x)",
 		  &src_addr, nic_addr);
@@ -264,7 +264,7 @@ static int kcxi_addr_res_ipv4_dest(const char *ipv4_addr)
 		goto error_free_kcxi_arp_res_entry;
 	}
 
-	nic_addr = MAC_ADDR_TO_NIC_ADDR(res_entry->dest_mac_addr);
+	nic_addr = ALGO_MAC_ADDR_TO_NIC_ADDR(res_entry->dest_mac_addr);
 
 	kcxi_arp_res_entry_free(res_entry);
 
@@ -682,7 +682,7 @@ static void kcxi_addr_res_dest_cb(struct kcxi_arp_res_entry *entry, int rc)
 
 		ctx->cb(0, 0, rc, ctx->context);
 	} else {
-		ctx->nic = MAC_ADDR_TO_NIC_ADDR(entry->dest_mac_addr);
+		ctx->nic = ALGO_MAC_ADDR_TO_NIC_ADDR(entry->dest_mac_addr);
 
 		LOG_DEBUG("ARP resolution success: nic=%#x", ctx->nic);
 

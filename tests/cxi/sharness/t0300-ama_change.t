@@ -82,8 +82,8 @@ test_expect_success "Removing kfi_getinfo test module" "
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 
-test_expect_success "Verify kfi_getinfo -ENODEV failure with $DEV and $NON_AMA_MAC" "
-	insmod ${KFAB_DIR}/tests/cxi/single_client/test_run_getinfo.ko node=$DEV expected_rc=-61 &&
+test_expect_success "Verify kfi_getinfo success with $DEV and $NON_AMA_MAC" "
+	insmod ${KFAB_DIR}/tests/cxi/single_client/test_run_getinfo.ko node=$DEV expected_rc=0 &&
 	[ $(dmesg | grep -c 'Modules linked in') -eq 0 ]
 "
 

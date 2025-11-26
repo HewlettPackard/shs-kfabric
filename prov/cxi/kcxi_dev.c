@@ -20,43 +20,24 @@ MODULE_PARM_DESC(skip_device_ready_checks,
 /**
  * kcxi_dev_get_nic_addr() - Get kCXI device NIC address.
  * @kdev: kCXI device.
- * @check_ama: flag
  *
- * If the check_ama flag is true validate the mac address is Algorithmic
- * MAC Address (AMA) format.
- * 
- * Return: On success, value greater than or equal to zero representing the
- * NIC address (NIC address is capped at 20 bits). Else, negative errno.
+ * Return: The NIC address if this has been configured. Else, ENODEV.
  */
-static int kcxi_dev_get_nic_addr(struct kcxi_dev *kdev, bool check_ama)
+static int kcxi_dev_get_nic_addr(struct kcxi_dev *kdev)
 {
 	struct cxi_dev *cdev;
-	u64 mac_addr;
 	int lock_idx;
 	int rc;
 
 	lock_idx = srcu_read_lock(&kdev->dev_lock);
 
 	cdev = srcu_dereference(kdev->dev, &kdev->dev_lock);
-	if (cdev) {
-		mac_addr = ether_addr_to_u64(cdev->mac_addr);
+	if (cdev && cdev->prop.nid != CXI_INVALID_NID)
 		rc = cdev->prop.nid;
-	} else {
+	else
 		rc = -ENODEV;
-	}
 
 	srcu_read_unlock(&kdev->dev_lock, lock_idx);
-
-	/* Validate mac address is Algorithmic MAC Address (AMA) format */
-	if (check_ama && rc != -ENODEV){
-		if (!is_locally_admin_mac_addr(mac_addr)) {
-			u8 mac_array[ETH_ALEN];
-			u64_to_ether_addr(mac_addr, mac_array);
-			KCXI_DEV_ERR(kdev, "MAC address %pM not AMA format",
-				mac_array);
-			rc = -ENODEV;
-		}
-	}
 
 	return rc;
 }
@@ -126,7 +107,7 @@ ssize_t kcxi_dev_nic_array(unsigned int **nic_array)
 
 	count = 0;
 	list_for_each_entry(kdev, &dev_list, entry) {
-		rc = kcxi_dev_get_nic_addr(kdev, false);
+		rc = kcxi_dev_get_nic_addr(kdev);
 		if (rc < 0)
 			goto err_free_nic_array;
 
@@ -166,7 +147,7 @@ int kcxi_dev_first_nic(void)
 	if (!kdev)
 		rc = -ENODEV;
 	else
-		rc = kcxi_dev_get_nic_addr(kdev, false);
+		rc = kcxi_dev_get_nic_addr(kdev);
 	mutex_unlock(&dev_list_lock);
 
 	return rc;
@@ -186,7 +167,7 @@ int kcxi_dev_fabric(unsigned int nic)
 
 	mutex_lock(&dev_list_lock);
 	list_for_each_entry(kdev, &dev_list, entry) {
-		nic_addr = kcxi_dev_get_nic_addr(kdev, false);
+		nic_addr = kcxi_dev_get_nic_addr(kdev);
 		if (nic_addr < 0)
 			continue;
 
@@ -217,7 +198,7 @@ int kcxi_dev_index_to_addr(unsigned int index)
 		if (kdev->index != index)
 			continue;
 
-		nic_addr = kcxi_dev_get_nic_addr(kdev, true);
+		nic_addr = kcxi_dev_get_nic_addr(kdev);
 		if (nic_addr < 0)
 			continue;
 
@@ -243,7 +224,7 @@ int kcxi_dev_index(unsigned int nic)
 
 	mutex_lock(&dev_list_lock);
 	list_for_each_entry(kdev, &dev_list, entry) {
-		nic_addr = kcxi_dev_get_nic_addr(kdev, false);
+		nic_addr = kcxi_dev_get_nic_addr(kdev);
 		if (nic_addr < 0)
 			continue;
 
@@ -271,7 +252,7 @@ bool kcxi_dev_nic_exists(unsigned int nic)
 
 	mutex_lock(&dev_list_lock);
 	list_for_each_entry(kdev, &dev_list, entry) {
-		nic_addr = kcxi_dev_get_nic_addr(kdev, false);
+		nic_addr = kcxi_dev_get_nic_addr(kdev);
 		if (nic_addr < 0)
 			continue;
 
@@ -453,7 +434,7 @@ struct kcxi_dev *kcxi_dev_get(unsigned int nic)
 
 	mutex_lock(&dev_list_lock);
 	list_for_each_entry(kdev, &dev_list, entry) {
-		nic_addr = kcxi_dev_get_nic_addr(kdev, false);
+		nic_addr = kcxi_dev_get_nic_addr(kdev);
 		if (nic_addr < 0)
 			continue;
 
