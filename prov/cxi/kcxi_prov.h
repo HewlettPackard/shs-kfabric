@@ -272,7 +272,7 @@ static inline bool is_locally_admin_mac_addr(u64 mac_addr)
 /* KCXI receive attribute defaults and limitations. */
 #define KCXI_RX_CAPS (KFI_MSG | KFI_RMA | KFI_RECV | KFI_REMOTE_READ | \
 		      KFI_REMOTE_WRITE | KFI_MULTI_RECV | KFI_RMA_EVENT | \
-		      KFI_SOURCE | KFI_TAGGED | KFI_DIRECTED_RECV)
+		      KFI_SOURCE | KFI_TAGGED | KFI_DIRECTED_RECV | KFI_TAGGED_MULTI_RECV)
 #define KCXI_RX_MODE 0
 #define KCXI_RX_OP_FLAGS (KFI_COMPLETION | KFI_MULTI_RECV | KFI_MORE)
 #define KCXI_RX_MSG_ORDER KFI_ORDER_NONE

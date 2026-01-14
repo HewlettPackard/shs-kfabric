@@ -307,7 +307,6 @@ static ssize_t kcxi_recvmsg(struct kfid_ep *ep, const struct kfi_msg_tagged *msg
 	bool more = !!(flags & KFI_MORE);
 
 	if (!msg || (flags & ~(KCXI_RX_OP_FLAGS | KFI_MULTI_RECV)) ||
-	    (tagged && (flags & KFI_MULTI_RECV)) ||
 	    (tagged && (msg->tag > KCXI_MAX_USER_MATCH_VALUE ||
 			msg->ignore > KCXI_MAX_USER_MATCH_VALUE)))
 		return -EINVAL;
