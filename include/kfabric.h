@@ -128,6 +128,8 @@ typedef struct kfid *kfid_t;
 #define KFI_AFFINITY		(1ULL << 29)
 #define KFI_COMMIT_COMPLETE	(1ULL << 30)
 
+#define KFI_TAGGED_MULTI_RECV	(1ULL << 31)
+
 #define KFI_RMA_PMEM		(1ULL << 49)
 #define KFI_SOURCE_ERR		(1ULL << 50)
 #define KFI_LOCAL_COMM		(1ULL << 51)
