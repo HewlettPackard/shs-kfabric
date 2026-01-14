@@ -15,6 +15,9 @@
 #include <kfi_eq.h>
 #include <kfi_domain.h>
 #include <kfi_endpoint.h>
+#include <kfi_tagged.h>
+#include <kfi_errno.h>
+#include <test_common.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
@@ -39,6 +42,8 @@ static struct kfid_ep *sep;
 static struct kfid_ep *rx;
 static struct kfid_ep *tx1;
 static struct kfid_ep *tx2;
+static uint64_t tag = 0x1234567;
+static uint64_t tag_bad = 0x1234;
 
 #define TX1_BUF_SIZE 2097152
 #define TX2_BUF_SIZE 1
@@ -53,6 +58,7 @@ static char *service = "0";
 static kfi_addr_t loopback_addr;
 
 #define TIMEOUT_SEC 5
+#define SENDDATA 0xCEEFFULL
 
 static DECLARE_WAIT_QUEUE_HEAD(wait_queue);
 static atomic_t event_count = ATOMIC_INIT(0);
@@ -60,6 +66,10 @@ static atomic_t event_count = ATOMIC_INIT(0);
 static bool kmalloc_buf;
 module_param(kmalloc_buf, bool, 0);
 MODULE_PARM_DESC(kmalloc_buf, "Use kmalloc for buffer allocation");
+
+static bool mode_tagged;
+module_param(mode_tagged, bool, 0);
+MODULE_PARM_DESC(mode_tagged, "If 0 UNTAGGED or else TAGGED");
 
 MODULE_AUTHOR("Ian Ziemba");
 MODULE_DESCRIPTION("kfabric CXI multi-recv test");
@@ -107,10 +117,14 @@ static int test_init(void)
 		rc = -ENOMEM;
 		goto err;
 	}
+
 	hints->caps = (KFI_MSG | KFI_RMA | KFI_SEND | KFI_RECV | KFI_READ |
 		       KFI_WRITE | KFI_REMOTE_READ | KFI_REMOTE_WRITE |
 		       KFI_MULTI_RECV | KFI_RMA_EVENT | KFI_REMOTE_COMM |
 		       KFI_NAMED_RX_CTX);
+
+	if (mode_tagged)
+		hints->caps |= KFI_TAGGED | KFI_TAGGED_MULTI_RECV;
 
 	rc = kfi_getinfo(0, node, service, KFI_SOURCE, hints, &info);
 	if (rc) {
@@ -138,7 +152,11 @@ static int test_init(void)
 		goto err_free_domain;
 	}
 
-	cq_attr.format = KFI_CQ_FORMAT_DATA;
+	if (mode_tagged)
+		cq_attr.format = KFI_CQ_FORMAT_TAGGED;
+	else
+		cq_attr.format = KFI_CQ_FORMAT_DATA;
+
 	rc = kfi_cq_open(domain, &cq_attr, &cq, test_cq_cb, NULL);
 	if (rc) {
 		LOG_ERR("Failed to allocate CQ");
@@ -163,7 +181,7 @@ static int test_init(void)
 		goto err_free_sep;
 	}
 
-	rx_attr.op_flags = KFI_MULTI_RECV;
+	rx_attr.op_flags = KFI_MULTI_RECV | KFI_COMPLETION;
 	rc = kfi_rx_context(sep, 0, &rx_attr, &rx, NULL);
 	if (rc) {
 		LOG_ERR("Failed to allocate RX context");
@@ -183,6 +201,9 @@ static int test_init(void)
 	}
 
 	tx_attr.caps = KFI_NAMED_RX_CTX | KFI_MSG;
+	if (mode_tagged)
+		tx_attr.caps |=  KFI_TAGGED;
+
 	rc = kfi_tx_context(sep, 0, &tx_attr, &tx1, NULL);
 	if (rc) {
 		LOG_ERR("Failed to allocate TX1 context");
@@ -308,6 +329,8 @@ static int post_rx_buffers(void)
 	int rc;
 
 	rc = kfi_recv(rx, rx_buffer, RX_BUF_SIZE, NULL, 0, rx);
+	if (rc)
+		LOG_ERR("Failed to post receive buffer: rc=%d", rc);
 
 	return rc;
 }
@@ -321,19 +344,208 @@ static int post_tx_buffers(void)
 	 */
 	rc = kfi_send(tx1, tx1_buffer, TX1_BUF_SIZE, NULL, loopback_addr, tx1);
 	if (rc)
-		return rc;
+		LOG_ERR("Failed to post send buffer: rc=%d", rc);
 
 	rc = kfi_send(tx2, tx2_buffer, TX2_BUF_SIZE, NULL, loopback_addr, tx2);
+	if (rc)
+		LOG_ERR("Failed to post send buffer: rc=%d", rc);
 
 	return rc;
 }
 
+static int post_tagged_rx_buffers(void)
+{
+	int rc;
+
+	rc = kfi_trecv(rx, rx_buffer, RX_BUF_SIZE, NULL, KFI_ADDR_UNSPEC, tag,
+                       0, rx);
+	if (rc)
+		LOG_ERR("Failed to post tagged receive buffer: rc=%d", rc);
+
+	return rc;
+}
+
+static int post_tagged_tx_buffers(void)
+{
+	int rc;
+
+	/* Named RX contexts are not enabled. This means that the TX context
+	 * index is used to identify the RX context index.
+	 */
+	rc = kfi_tsend(tx1, tx1_buffer, TX1_BUF_SIZE, NULL, loopback_addr, tag,
+                       tx1);
+	if (rc)
+                LOG_ERR("Failed to post tagged send buffer: rc=%d", rc);
+
+	rc = kfi_tsend(tx2, tx2_buffer, TX2_BUF_SIZE, NULL, loopback_addr, tag,
+                       tx2);
+        if (rc)
+                LOG_ERR("Failed to post tagged send buffer: rc=%d", rc);
+
+	return rc;
+}
+
+static int post_one_good_one_bad_tagged_tx_buffers(void)
+{
+	int rc;
+
+	/* Named RX contexts are not enabled. This means that the TX context
+	 * index is used to identify the RX context index.
+	 */
+	rc = kfi_tsend(tx1, tx1_buffer, TX1_BUF_SIZE, NULL, loopback_addr, tag_bad,
+                       tx1);
+	if (rc)
+                LOG_ERR("Failed to post tagged send buffer with bad tag: rc=%d", rc);
+
+	rc = kfi_tsend(tx2, tx2_buffer, TX2_BUF_SIZE, NULL, loopback_addr, tag,
+                       tx2);
+        if (rc)
+                LOG_ERR("Failed to post tagged send buffer with good tag: rc=%d", rc);
+
+	return rc;
+}
+
+/* 
+ * This function handles the completion queue processing for the
+ * test where we send one good tagged message and one bad tagged
+ * message. The test will PASS if we receive one good tagged message
+ * only. The bad tagged message will not be received. So here we are
+ * expecting to catch two send events and one receive. One send event
+ * will be caught in the error check when rc == -KFI_EAVAIL. So here 
+ * we are expecting cq_events count to be 3. No need for mode_tagged
+ * check here since this function is called only when mode_tagged = 1.
+ */ 
+static int process_one_good_one_bad_tagged_cq(void)
+{
+	int rc;
+	int cq_events = 0;
+	int rx_cq_events = 0;
+	struct kfi_cq_tagged_entry event;
+	struct kfi_cq_err_entry error;
+	int i;
+	int bad_tag_count = 0;
+
+again:
+	/* Wait for callback to be triggered to unblock this thread. */
+	rc = wait_event_timeout(wait_queue, atomic_read(&event_count),
+				TIMEOUT_SEC * HZ);
+	if (!rc) {
+		LOG_ERR("Timeout waiting for CQ event");
+		return -ETIMEDOUT;
+	}
+
+	/* Ack the current event count. */
+	for (i = 0; i < atomic_read(&event_count); i++)
+		atomic_dec(&event_count);
+
+	while (true) {
+		rc = kfi_cq_read(cq, &event, 1);
+		if (rc == 1) {
+			if (event.op_context != rx &&
+			    event.op_context != tx1 &&
+			    event.op_context != tx2) {
+				LOG_ERR("Bad CQ event data");
+				return -EIO;
+			}
+
+			if ((event.flags & ~KFI_MULTI_RECV) ==
+			    (KFI_RECV | KFI_TAGGED)) {
+				/* Target events are not in order. */
+				if (rx_buffer != event.buf &&
+				    (rx_buffer + TX1_BUF_SIZE) != event.buf &&
+				    (rx_buffer + TX2_BUF_SIZE) != event.buf) {
+					LOG_ERR("Bad multi-recv buf pointer");
+					return -EIO;
+				}
+
+				rx_cq_events++;
+
+				if (rx_cq_events == 1) {
+					rx1_buf = event.buf;
+					rx1_len = event.len;
+				} else {
+					rx2_buf = event.buf;
+					rx2_len = event.len;
+				}
+			}
+			if ((event.flags & ~KFI_MULTI_RECV) ==
+			    (KFI_MSG | KFI_RECV)) {
+				/* Target events are not in order. */
+				if (rx_buffer != event.buf &&
+				    (rx_buffer + TX1_BUF_SIZE) != event.buf &&
+				    (rx_buffer + TX2_BUF_SIZE) != event.buf) {
+					LOG_ERR("Bad multi-recv buf pointer");
+					return -EIO;
+				}
+
+				rx_cq_events++;
+
+				if (rx_cq_events == 1) {
+					rx1_buf = event.buf;
+					rx1_len = event.len;
+				} else {
+					rx2_buf = event.buf;
+					rx2_len = event.len;
+				}
+			}
+
+			if ((event.flags & KFI_MULTI_RECV) &&
+			    rx_cq_events != 1) {
+				LOG_ERR("Multi-receive prematurely returned %d", rx_cq_events);
+				return -EIO;
+			}
+
+			cq_events++;
+			continue;
+		} else if (rc == -EAGAIN) {
+			break;
+		} else if (rc == -KFI_EAVAIL) {
+		        rc = kfi_cq_readerr(cq, &error, 0);
+		        if (rc < 0) {
+                		LOG_ERR("No CQ error present: rc=%d", rc);
+                		return -EINVAL;
+        		}
+
+        		if (error.flags != (KFI_SEND | KFI_TAGGED)) {
+                		LOG_ERR("Bad error flags");
+                		return -EIO;
+        		}
+
+        		if (error.op_context != tx1) {
+                		LOG_ERR("Bad tagged send event operation context");
+                		return -EIO;
+        		}
+
+			cq_events++;
+			bad_tag_count++;
+		}
+
+		if (rx_cq_events != 1 && bad_tag_count != 1) {
+			LOG_ERR("Unexpected CQ rc=%d", rc);
+			return -EIO;
+		}
+	}
+
+	if (cq_events < 3)
+		goto again;
+
+	return 0;
+}
+
+/* 
+ * This function handles the completion queue processing for both the
+ * tests - untagged multi recv and tagged multi recv. For the tagged test
+ * we send two good tagged messages. For both the tests, we expect to receive
+ * four events - two send and two receive, so cq_events should be 4. Here
+ * we are using mode_tagged check because this handles for both tagged
+ * and untagged tests.
+ */ 
 static int process_cq(void)
 {
 	int rc;
 	int cq_events = 0;
 	int rx_cq_events = 0;
-	struct kfi_cq_data_entry event;
+	struct kfi_cq_tagged_entry event;
 	int i;
 
 again:
@@ -360,15 +572,19 @@ again:
 				return -EIO;
 			}
 
-			if ((event.flags & ~KFI_MULTI_RECV) ==
-			    (KFI_MSG | KFI_RECV)) {
-				/* Target events are not order. */
+			if ((mode_tagged &&
+			     (event.flags & ~KFI_MULTI_RECV) ==
+					(KFI_RECV | KFI_TAGGED)) ||
+			    (!mode_tagged &&
+			     ((event.flags & ~KFI_MULTI_RECV) ==
+					(KFI_MSG | KFI_RECV)))) {
+				/* Target events are not in order. */
 				if (rx_buffer != event.buf &&
-				    (rx_buffer + TX1_BUF_SIZE) != event.buf &&
-				    (rx_buffer + TX2_BUF_SIZE) != event.buf) {
-					LOG_ERR("Bad multi-recv buf pointer");
-					return -EIO;
-				}
+			    		(rx_buffer + TX1_BUF_SIZE) != event.buf &&
+			    		(rx_buffer + TX2_BUF_SIZE) != event.buf) {
+						LOG_ERR("Bad multi-recv buf pointer");
+						return -EIO;
+					}
 
 				rx_cq_events++;
 
@@ -383,7 +599,7 @@ again:
 
 			if ((event.flags & KFI_MULTI_RECV) &&
 			    rx_cq_events != 2) {
-				LOG_ERR("Multi-receive prematurely returned");
+				LOG_ERR("Multi-receive prematurely returned %d", rx_cq_events);
 				return -EIO;
 			}
 
@@ -399,6 +615,27 @@ again:
 
 	if (cq_events < 4)
 		goto again;
+
+	return 0;
+}
+
+static int verify_one_good_one_bad_tagged_buffers(void)
+{
+	int rc;
+
+	if (rx1_len == TX1_BUF_SIZE) {
+		rc = memcmp(rx1_buf, tx1_buffer, TX1_BUF_SIZE);
+	} else if (rx1_len == TX2_BUF_SIZE) {
+		rc = memcmp(rx1_buf, tx2_buffer, TX2_BUF_SIZE);
+	} else {
+		LOG_ERR("Bad receive length: rx1_len=%lu", rx1_len);
+		return -EIO;
+	}
+
+	if (rc) {
+		LOG_ERR("Data miscompare");
+		return -EIO;
+	}
 
 	return 0;
 }
@@ -448,21 +685,55 @@ static int __init test_module_init(void)
 	if (rc)
 		goto error;
 
-	rc = post_rx_buffers();
-	if (rc)
-		goto error_cleanup;
+	if (mode_tagged) {
+		rc = post_tagged_rx_buffers();
+		if (rc)
+			goto error_cleanup;
 
-	rc = post_tx_buffers();
-	if (rc)
-		goto error_cleanup;
+		rc = post_tagged_tx_buffers();
+		if (rc)
+			goto error_cleanup;
 
-	rc = process_cq();
-	if (rc)
-		goto error_cleanup;
+		rc = process_cq();
+		if (rc)
+			goto error_cleanup;
 
-	rc = verify_buffers();
-	if (rc)
-		goto error_cleanup;
+		rc = verify_buffers();
+		if (rc)
+			goto error_cleanup;
+
+		rc = post_tagged_rx_buffers();
+		if (rc)
+			goto error_cleanup;
+
+		rc = post_one_good_one_bad_tagged_tx_buffers();
+		if (rc)
+			goto error_cleanup;
+
+		rc = process_one_good_one_bad_tagged_cq();
+		if (rc)
+			goto error_cleanup;
+
+		rc = verify_one_good_one_bad_tagged_buffers();
+		if (rc)
+			goto error_cleanup;
+	} else {
+		rc = post_rx_buffers();
+		if (rc)
+			goto error_cleanup;
+
+		rc = post_tx_buffers();
+		if (rc)
+			goto error_cleanup;
+
+		rc = process_cq();
+		if (rc)
+			goto error_cleanup;
+
+		rc = verify_buffers();
+		if (rc)
+			goto error_cleanup;
+	}
 
 	return 0;
 

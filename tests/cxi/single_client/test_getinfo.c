@@ -1930,7 +1930,7 @@ static int test_kfilnd_required_caps(int id)
 	}
 	hints->caps = (KFI_MSG | KFI_RMA | KFI_SEND | KFI_RECV | KFI_READ |
 		       KFI_WRITE | KFI_REMOTE_READ | KFI_REMOTE_WRITE |
-		       KFI_MULTI_RECV | KFI_RMA_EVENT | KFI_REMOTE_COMM);
+		       KFI_MULTI_RECV | KFI_RMA_EVENT | KFI_REMOTE_COMM | KFI_TAGGED_MULTI_RECV);
 
 	rc = kfi_getinfo_success(0, valid_node, valid_service, KFI_SOURCE,
 				 hints, &info);
@@ -1965,7 +1965,7 @@ static int test_specific_caps(int id)
 		rc = -ENOMEM;
 		goto out;
 	}
-	hints->caps = (KFI_RMA | KFI_MSG | KFI_MULTI_RECV);
+	hints->caps = (KFI_RMA | KFI_MSG | KFI_MULTI_RECV | KFI_TAGGED_MULTI_RECV);
 
 	rc = kfi_getinfo_success(0, valid_node, valid_service, KFI_SOURCE,
 				 hints, &info);
