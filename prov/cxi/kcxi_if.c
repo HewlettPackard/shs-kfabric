@@ -155,6 +155,14 @@ struct kcxi_if *kcxi_if_alloc(unsigned int nic, const struct kfid_fabric *fabric
 		goto err;
 	}
 
+	/* Check if PID granule is the expected value */
+	if (kdev->pid_granule != (KCXI_MAX_RX_CTX * 2)) {
+		LOG_ERR("Unsupported PID granule %u (expected %u)",
+			kdev->pid_granule, KCXI_MAX_RX_CTX * 2);
+		rc = -EOPNOTSUPP;
+		goto err_dev_put;
+	}
+
 	kcxi_if = kzalloc(sizeof(*kcxi_if), GFP_KERNEL);
 	if (!kcxi_if) {
 		rc = -ENOMEM;
