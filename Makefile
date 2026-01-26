@@ -42,6 +42,7 @@ $(__END_OF_LIST__)
 all: build
 
 build:
+	$(MAKE) -C $(KDIR) M=$(PWD)/tests/cxi/common KBUILD_EXTRA_SYMBOLS=$(PWD)/../cxi-driver/drivers/net/ethernet/hpe/ss1/Module.symvers
 	$(MAKE) -C $(KDIR) M=$(PWD) KBUILD_EXTRA_SYMBOLS=$(PWD)/../cxi-driver/drivers/net/ethernet/hpe/ss1/Module.symvers modules
 
 install:
@@ -71,13 +72,12 @@ nroff:
 	done
 
 else
-
-.NOTPARALLEL: tests/cxi/single_client/ tests/cxi/multi_client/
-
+.NOTPARALLEL: tests/cxi/common/ tests/cxi/single_client/ tests/cxi/multi_client/
 obj-y += kfi/
 obj-y += prov/cxi/
 #obj-y += prov/ibverbs/
 #obj-y += tests/ibverbs/simple/
+obj-y += tests/cxi/common/
 obj-y += tests/cxi/single_client/
 obj-y += tests/cxi/multi_client/
 

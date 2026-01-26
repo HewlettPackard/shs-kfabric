@@ -116,6 +116,8 @@ for flavor in %flavors_to_build; do
     rm -rf obj/$flavor
     cp -r source obj/$flavor
 
+    # Build test_common.o first to avoid race condition in parallel builds
+    make -C %{kernel_source $flavor} M=$PWD/obj/$flavor/tests/cxi/common KCPPFLAGS=-I%{_includedir}
     make -C %{kernel_source $flavor} modules M=$PWD/obj/$flavor KCPPFLAGS=-I%{_includedir} KBUILD_EXTRA_SYMBOLS=%{prefix}/src/cxi/$flavor/Module.symvers %{?_smp_mflags}
 done
 
