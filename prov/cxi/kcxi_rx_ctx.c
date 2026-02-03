@@ -255,6 +255,7 @@ static int kcxi_rx_ctx_enable(struct kcxi_rx_ctx *rx_ctx)
 	size_t mr_table_size = rx_ctx->ep_attr->domain->attr.mr_cnt;
 	int rc;
 	char rxc_debugfs_dir_name[16];
+	unsigned int node, cpu;
 
 	mutex_lock(&rx_ctx->lock);
 
@@ -273,11 +274,15 @@ static int kcxi_rx_ctx_enable(struct kcxi_rx_ctx *rx_ctx)
 	if (rx_ctx->ep_attr->attr.max_msg_size > eager_threshold)
 		rx_ctx->rendezvous_enabled = true;
 
+	/* Get NUMA node and CPU for this queue, spreading across non-empty nodes */
+	kcxi_get_node_cpu(rx_ctx->ep_attr->dom_if->kcxi_if->dev->device,
+			  rx_ctx->rx_id, &node, &cpu);
+
 	/* KFI_MSG, KFI_TAGGED, KFI_RMA RX CTX needs target CMDQ and PtlTE. */
 	rx_ctx->target =
 		kcxi_cmdq_target_alloc(rx_ctx->ep_attr->dom_if->kcxi_if,
 				       rx_ctx->attr.size,
-				       cpu_to_node(rx_ctx->recv_cq->attr.signaling_vector));
+				       node);
 	if (IS_ERR(rx_ctx->target)) {
 		mutex_unlock(&rx_ctx->lock);
 		return PTR_ERR(rx_ctx->target);

@@ -4,8 +4,117 @@
  * Copyright 2019-2021 Hewlett Packard Enterprise Development LP. All rights reserved.
  */
 #include <linux/slab.h>
+#include <linux/topology.h>
 
 #include "kcxi_prov.h"
+
+/**
+ * kcxi_get_node_cpu() - Get NUMA node and CPU for a queue
+ * @dev: Device structure
+ * @queue_id: Queue ID
+ * @queue_node: Output pointer for NUMA node
+ * @queue_cpu: Output pointer for CPU
+ *
+ * This function spreads queues across non-empty NUMA nodes (nodes that
+ * contain CPUs) to avoid overloading a single node. It handles systems
+ * with empty NUMA nodes by counting only nodes with CPUs.
+ */
+void kcxi_get_node_cpu(struct device *dev, unsigned int queue_id,
+		       unsigned int *queue_node, unsigned int *queue_cpu)
+{
+	int node;
+	int cpu;
+	int cpu_offset;
+	const struct cpumask *cpus;
+	int cpu_count;
+	int num_cpu_nodes = 0;
+	int dev_node = NUMA_NO_NODE;
+	int i;
+
+	/* Get device's NUMA node if device is provided */
+	if (dev)
+		dev_node = dev_to_node(dev);
+
+	/* If device node is invalid, use node 0 as default */
+	if (dev_node == NUMA_NO_NODE || dev_node < 0)
+		dev_node = 0;
+
+	/* Figure out how many numa nodes are online and contain
+	 * CPUs. Apparently linux will reorder the nodes so that the
+	 * empty ones are at the end of the list. If it's not the
+	 * case, then further changes will be needed.
+	 */
+	for_each_online_node(node) {
+		cpus = cpumask_of_node(node);
+		if (!cpumask_empty(cpus))
+			num_cpu_nodes++;
+	}
+
+	/* If no nodes with CPUs found, default to node 0 */
+	if (num_cpu_nodes == 0) {
+		*queue_node = 0;
+		*queue_cpu = 0;
+		return;
+	}
+
+	/* Round robin queues across all the nodes in the system instead of
+	 * overloading 1 node with multiple queues. Favor the local node to
+	 * start with.
+	 */
+	node = (dev_node + queue_id) % num_cpu_nodes;
+	if (!node_online(node)) {
+		/* For sanity, but that shouldn't be possible. */
+		if (dev)
+			dev_warn(dev, "Node %u not online. Defaulting to %u\n",
+				 node, dev_node);
+		node = dev_node;
+	}
+
+	/* If the queue ID exceeds the number of nodes, multiple queues will be
+	 * mapped to the same node. For this case, round robin queues within the
+	 * node.
+	 */
+	cpus = cpumask_of_node(node);
+	if (cpumask_empty(cpus)) {
+		/* For sanity, but that shouldn't be possible. */
+		if (dev)
+			dev_warn(dev, "Node %u is empty. Defaulting to all cpus.\n",
+				 node);
+		cpus = cpu_all_mask;
+	}
+
+	cpu_count = 0;
+	for_each_cpu(cpu, cpus) {
+		if (cpu_is_offline(cpu))
+			continue;
+		/* We only care about CPUs which belong to the NUMA node. */
+		if (cpumask_test_cpu(cpu, cpus))
+			cpu_count++;
+	}
+
+	if (cpu_count == 0) {
+		/* Fallback if no online CPUs in node */
+		*queue_node = 0;
+		*queue_cpu = 0;
+		return;
+	}
+
+	cpu_offset = (queue_id / num_cpu_nodes) % cpu_count;
+	i = 0;
+	for_each_cpu(cpu, cpus) {
+		if (cpu_is_offline(cpu))
+			continue;
+		if (cpumask_test_cpu(cpu, cpus)) {
+			if (i == cpu_offset)
+				break;
+			i++;
+		}
+	}
+
+	*queue_node = cpu_to_node(cpu);
+	*queue_cpu = cpu;
+}
+EXPORT_SYMBOL(kcxi_get_node_cpu);
 
 /**
  * kcxi_cmdq_free() - Free a kCXI command queue.

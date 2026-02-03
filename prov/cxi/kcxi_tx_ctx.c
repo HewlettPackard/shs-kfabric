@@ -152,6 +152,7 @@ static int kcxi_tx_ctx_enable(struct kcxi_tx_ctx *tx_ctx)
 {
 	int rc;
 	char txc_debugfs_dir_name[16];
+	unsigned int node, cpu;
 
 	mutex_lock(&tx_ctx->lock);
 
@@ -170,12 +171,16 @@ static int kcxi_tx_ctx_enable(struct kcxi_tx_ctx *tx_ctx)
 	    tx_ctx->ep_attr->attr.max_msg_size > eager_threshold)
 		tx_ctx->rendezvous_enabled = true;
 
+	/* Get NUMA node and CPU for this queue, spreading across non-empty nodes */
+	kcxi_get_node_cpu(tx_ctx->ep_attr->dom_if->kcxi_if->dev->device,
+			  tx_ctx->tx_id, &node, &cpu);
+
 	tx_ctx->transmit =
 		kcxi_cmdq_transmit_alloc(tx_ctx->ep_attr->dom_if->kcxi_if,
 					 tx_ctx->attr.size,
 					 tx_ctx->ep_attr->auth_key,
 					 kfi_tc_to_cxi_tc(tx_ctx->attr.tclass),
-					 cpu_to_node(tx_ctx->send_cq->attr.signaling_vector));
+					 node);
 	if (IS_ERR(tx_ctx->transmit)) {
 		mutex_unlock(&tx_ctx->lock);
 		return PTR_ERR(tx_ctx->transmit);

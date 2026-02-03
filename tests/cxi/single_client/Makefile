@@ -45,7 +45,8 @@ obj-m := \
 	test_msg_rnr.o \
 	test_more.o \
 	test_tagged_rma.o \
-	test_rma_md_cache.o
+	test_rma_md_cache.o \
+	test-numa-spread.o
 
 test-msg-ops-thread-objs := test_msg_ops_thread.o $(TEST_COMMON_LIB)
 test-rma-ops-thread-objs := test_rma_ops_thread.o $(TEST_COMMON_LIB)
@@ -55,6 +56,7 @@ test-mr-alloc-async-thread-objs := test_mr_alloc_async_thread.o $(TEST_COMMON_LI
 test-rx-ctx-opts-objs := test_rx_ctx_opts.o $(TEST_COMMON_LIB)
 test-tx-ctx-opts-objs := test_tx_ctx_opts.o $(TEST_COMMON_LIB)
 test-sep-rx-tx-ctx-objs := test_sep_rx_tx_ctx.o $(TEST_COMMON_LIB)
+test-numa-spread-objs := test_numa_spread.o $(TEST_COMMON_LIB)
 
 ccflags-y += -I$(TOPDIR)/include -I$(TOPDIR)/../cxi-driver/include \
 	-I$(TOPDIR)/../cassini-headers/install/include \

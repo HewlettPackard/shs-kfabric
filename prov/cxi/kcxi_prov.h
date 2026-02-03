@@ -1205,6 +1205,8 @@ int kcxi_ptlte_enable(struct kcxi_ptlte *ptlte, struct kcxi_cmdq *target);
 int kcxi_ptlte_disable(struct kcxi_ptlte *ptlte, struct kcxi_cmdq *target);
 
 /* Functions in cxi_cmdq.c */
+void kcxi_get_node_cpu(struct device *dev, unsigned int queue_id,
+		       unsigned int *queue_node, unsigned int *queue_cpu);
 void kcxi_cmdq_free(struct kcxi_cmdq *cxi_cmdq);
 struct kcxi_cmdq *kcxi_cmdq_transmit_alloc(struct kcxi_if *kcxi_if,
 					   unsigned int count,
