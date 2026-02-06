@@ -17,7 +17,7 @@
 # Then run this script to perform the test.
 
 TOP_DIR=$(realpath $(dirname "$0")/../../..)
-SBL=$TOP_DIR/../slingshot_base_link/cxi-sbl.ko
+SBL=$TOP_DIR/../slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko
 CXI_SS1=$TOP_DIR/../cxi-driver/cxi/cxi-ss1.ko disable_default_svc=0
 CXI_USER=$TOP_DIR/../cxi-driver/cxi/cxi-user.ko
 CXI_ETH=$TOP_DIR/../cxi-driver/cxi/cxi-eth.ko

@@ -13,7 +13,7 @@ cxi_test_setup() {
 	dmesg --clear
 
 	test_expect_success "Inserting SBL" "
-		insmod ${TOP_DIR}/slingshot_base_link/cxi-sbl.ko
+		insmod ${TOP_DIR}/slingshot_base_link/drivers/net/ethernet/hpe/sbl/cxi-sbl.ko
 	"
 
 	test_expect_success "Inserting SSLINK" "
