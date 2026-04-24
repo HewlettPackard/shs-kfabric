@@ -205,6 +205,10 @@ error:
 	return ERR_PTR(rc);
 }
 
+#ifndef timer_container_of
+#define timer_container_of from_timer
+#endif
+
 /**
  * kcxi_arp_res_entry_timeout() - Callback associated with the resolution entry
  * timeout timer.
@@ -222,7 +226,7 @@ static void kcxi_arp_res_entry_timeout(unsigned long data)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
 	struct kcxi_arp_res_entry_priv *entry_priv;
 
-	entry_priv = from_timer(entry_priv, t, timeout_timer);
+	entry_priv = timer_container_of(entry_priv, t, timeout_timer);
 	dest_addr = entry_priv->dest_addr;
 #else
 	dest_addr = (__be32)data;
