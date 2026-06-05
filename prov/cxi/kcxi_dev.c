@@ -109,10 +109,15 @@ ssize_t kcxi_dev_nic_array(unsigned int **nic_array)
 	list_for_each_entry(kdev, &dev_list, entry) {
 		rc = kcxi_dev_get_nic_addr(kdev);
 		if (rc < 0)
-			goto err_free_nic_array;
+			continue;
 
 		(*nic_array)[count] = rc;
 		count++;
+	}
+
+	if (!count) {
+		kfree(*nic_array);
+		*nic_array = NULL;
 	}
 
 	rc = count;
@@ -122,8 +127,6 @@ out_unlock:
 
 	return count;
 
-err_free_nic_array:
-	kfree(*nic_array);
 err_unlock:
 	mutex_unlock(&dev_list_lock);
 
@@ -140,14 +143,14 @@ err_unlock:
 int kcxi_dev_first_nic(void)
 {
 	struct kcxi_dev *kdev;
-	int rc;
+	int rc = -ENODEV;
 
 	mutex_lock(&dev_list_lock);
-	kdev = list_first_entry_or_null(&dev_list, struct kcxi_dev, entry);
-	if (!kdev)
-		rc = -ENODEV;
-	else
+	list_for_each_entry(kdev, &dev_list, entry) {
 		rc = kcxi_dev_get_nic_addr(kdev);
+		if (rc >= 0)
+			break;
+	}
 	mutex_unlock(&dev_list_lock);
 
 	return rc;
