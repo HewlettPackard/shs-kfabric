@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: GPL-2.0
  */
 #include <linux/slab.h>
-#include <linux/rwlock.h>
 #include <linux/if_ether.h>
 #include <linux/module.h>
 
