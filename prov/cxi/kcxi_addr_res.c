@@ -10,7 +10,13 @@
 
 #include "kcxi_prov.h"
 
-#define ALGO_MAC_ADDR_TO_NIC_ADDR(mac) ((mac) & 0xFFFFF)
+#define ALGO_MAC_VF_OFFSET	24
+#define ALGO_MAC_VF_MASK	0xFF
+#define ALGO_MAC_NIC_MASK	((1U << C_DFA_NIC_BITS) - 1)
+
+#define ALGO_MAC_ADDR_TO_NIC_ADDR(mac) \
+	(((mac) & ALGO_MAC_NIC_MASK) | \
+	 ((uint32_t)(((mac) >> ALGO_MAC_VF_OFFSET) & ALGO_MAC_VF_MASK) << C_DFA_NIC_BITS))
 
 /* Default destination PID is zero. */
 #define DEFAULT_DEST_PID 0

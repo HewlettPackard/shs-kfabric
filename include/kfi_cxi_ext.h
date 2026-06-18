@@ -39,14 +39,9 @@ struct kfi_cxi_domain_ops
  * @flags: Internal provider flags
  */
 struct kcxi_addr {
-	union {
-		struct {
-			uint64_t pid:12;
-			uint64_t nic:20;
-			uint64_t flags:10;
-		};
-		uint64_t qw;
-	};
+	uint64_t pid:12;
+	uint64_t nic:32;
+	uint64_t flags:10;
 };
 
 #endif /* _KFI_CXI_EXT_H_ */

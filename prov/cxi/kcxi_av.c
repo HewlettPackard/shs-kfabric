@@ -606,7 +606,6 @@ static const char *kcxi_av_straddr(struct kfid_av *av, const void *addr,
 				   char *buf, size_t *len)
 {
 	size_t size;
-	uint64_t kcxi_addr;
 
 	/*
 	 * AV does not need to be checked since kfabric would have
@@ -615,9 +614,9 @@ static const char *kcxi_av_straddr(struct kfid_av *av, const void *addr,
 	if (!addr || !len)
 		return NULL;
 
-	kcxi_addr = ((struct kcxi_addr *)addr)->qw;
-
-	size = snprintf(buf, *len, "kfi_addr_kcxi://0x%llx", kcxi_addr);
+	size = snprintf(buf, *len, "kfi_addr_kcxi://nic=0x%llx:pid=%llu",
+			((struct kcxi_addr *)addr)->nic,
+			((struct kcxi_addr *)addr)->pid);
 
 	/* Make sure that possibly truncated messages have a null terminator. */
 	if (buf && *len)
