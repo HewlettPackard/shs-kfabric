@@ -9,7 +9,7 @@ test_description="Change AMA and verify kfi_getinfo() functions"
 . ../cxi_test_setup.sh
 
 IPV4_ADDR="192.168.1.128"
-AMA_MAC="02:0E:AB:00:55:00"
+AMA_MAC="02:00:00:00:55:00"
 NON_AMA_MAC="00:0E:AB:01:23:00"
 DEV="cxi0"
 cxi_test_setup
