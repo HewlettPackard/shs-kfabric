@@ -614,7 +614,7 @@ static const char *kcxi_av_straddr(struct kfid_av *av, const void *addr,
 	if (!addr || !len)
 		return NULL;
 
-	size = snprintf(buf, *len, "kfi_addr_kcxi://nic=0x%llx:pid=%llu",
+	size = snprintf(buf, *len, "kfi_addr_kcxi://nic=0x%x:pid=%u",
 			((struct kcxi_addr *)addr)->nic,
 			((struct kcxi_addr *)addr)->pid);
 

@@ -24,6 +24,13 @@
 /* Default source PID can be any PID. */
 #define DEFAULT_SRC_PID C_PID_ANY
 
+/* PID stride applied per SR-IOV VF. Default of 8 supports cxi0..cxi7. */
+static uint vf_pid_stride = 8;
+module_param(vf_pid_stride, uint, 0444);
+MODULE_PARM_DESC(vf_pid_stride,
+		 "PID stride between SR-IOV VFs (default 8, supports up to cxi0..cxi7)");
+
+
 static bool valid_cxi_mac(const unsigned char *ha)
 {
 	u64 mac_addr;
@@ -460,7 +467,7 @@ error:
 static int kcxi_addr_src_nic_to_pid(const char *service, uint32_t src_nic, bool dest)
 {
 	struct kcxi_dev *dev;
-	uint16_t pid;
+	int pid;
 	int rc;
 
 	/* Lookup the source kCXI interface to get PID granule. */
@@ -493,6 +500,49 @@ error_release_dev:
 	kcxi_dev_put(dev);
 error:
 	return rc;
+}
+
+/**
+ * kcxi_addr_extend_pid() - Fold an SR-IOV VF discriminator into a resolved PID.
+ * @addr: kCXI address whose @nic carries the endpoint owner and whose @pid is
+ * the base value to extend.
+ *
+ * When the CXI driver is loaded with vf_nid_extension=true, (vf_num + 1) is
+ * stored in @addr->nic above bit C_DFA_NIC_BITS. Virtual functions that share
+ * one physical NIC otherwise resolve the same service string to the same PID,
+ * colliding in the device-wide (VNI, PID) domain table. Folding the
+ * discriminator into the PID using vf_pid_stride keeps them unique. PF
+ * addresses (nid_vf_ext == 0) and C_PID_ANY are left untouched.
+ *
+ * Return: On success, zero. On error, negative errno.
+ */
+static int kcxi_addr_extend_pid(struct kcxi_addr *addr)
+{
+	uint32_t nid_vf_ext;
+	int new_pid;
+
+	/* nid_vf_ext encodes the VF as stored in the NIC address by the CXI
+	 * driver when vf_nid_extension=true: 0 = PF, 1 = first VF, etc.
+	 */
+	nid_vf_ext = addr->nic >> C_DFA_NIC_BITS;
+	if (!nid_vf_ext || addr->pid == C_PID_ANY)
+		return 0;
+
+	new_pid = addr->pid + nid_vf_ext * vf_pid_stride;
+
+	if (new_pid >= C_PID_ANY) {
+		LOG_ERR("VF PID %d out of range (nid_vf_ext=%u base=%u stride=%u)",
+			new_pid, nid_vf_ext, addr->pid, vf_pid_stride);
+
+		return -EADDRNOTAVAIL;
+	}
+
+	LOG_DEBUG("Applied VF PID: base=%u nid_vf_ext=%u stride=%u -> pid=%d",
+		  addr->pid, nid_vf_ext, vf_pid_stride, new_pid);
+
+	addr->pid = new_pid;
+
+	return 0;
 }
 
 /**
@@ -551,6 +601,13 @@ static int kcxi_addr_res_info(const char *node, const char *service,
 	}
 
 	addr->pid = rc;
+
+	rc = kcxi_addr_extend_pid(addr);
+	if (rc < 0) {
+		LOG_ERR("Failed to extend PID with VF discriminator rc=%d", rc);
+
+		goto error;
+	}
 
 	if (dest)
 		LOG_DEBUG("Resolved dest kCXI address: NIC=%#x PID=%u",
