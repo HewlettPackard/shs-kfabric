@@ -18,6 +18,11 @@
 #include <linux/timer.h>
 #include <linux/version.h>
 
+/* timer_delete() replaced del_timer() in v6.15; backport for older kernels */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 15, 0)
+#define timer_delete del_timer
+#endif
+
 #include "kcxi_prov.h"
 
 unsigned int res_timeout = 5;
@@ -101,7 +106,7 @@ void kcxi_arp_res_entry_free(struct kcxi_arp_res_entry *entry)
 	}
 	spin_unlock(&res_lock);
 
-	del_timer(&entry_priv->timeout_timer);
+	timer_delete(&entry_priv->timeout_timer);
 
 	neigh_release(entry_priv->neigh);
 
@@ -250,7 +255,7 @@ static void kcxi_arp_res_entry_timeout(unsigned long data)
 	spin_unlock(&res_lock);
 
 	if (found) {
-		del_timer(&p->timeout_timer);
+		timer_delete(&p->timeout_timer);
 
 		queue_work(kcxi_wq, &p->work);
 	}
@@ -446,7 +451,7 @@ static unsigned int kcxi_arp_res_entry_update(void *priv, struct sk_buff *skb,
 
 	if (wakeup) {
 		if (p->cb) {
-			del_timer(&p->timeout_timer);
+			timer_delete(&p->timeout_timer);
 
 			queue_work(kcxi_wq, &p->work);
 		} else {
