@@ -28,7 +28,7 @@
 %endif
 
 Name:       cray-kfabric
-Version:    1.0.1
+Version:    1.0.2
 Release:    %(echo ${BUILD_METADATA})
 Summary:    Kfabric API
 License:    GPL-2.0-only OR BSD-2-Clause
@@ -97,8 +97,8 @@ Requires:   cray-slingshot-base-link-dkms
 Requires:   cray-slingshot-base-link-devel
 Requires:   cray-cxi-driver-dkms
 Requires:   cray-cxi-driver-devel
-Conflicts:  kmod-%name
-Conflicts:  %name-kmp
+Conflicts:  kmod-%{name}
+Conflicts:  %{name}-kmp
 
 %description dkms
 DKMS support for kfabric
@@ -177,7 +177,8 @@ echo "${dkms_source_dir}" >> dkms-files
 
 %pre dkms
 
-%post dkms
+# DKMS build/install runs in the posttrans scriptlet so the old module is removed first on upgrade.
+%posttrans dkms
 if [ -f /usr/libexec/dkms/common.postinst ] && [ -x /usr/libexec/dkms/common.postinst ]
 then
     postinst=/usr/libexec/dkms/common.postinst
@@ -215,7 +216,10 @@ rm %{prefix}/src/kfabric
 %postun dracut
 # Remove firmware from initrd.
 %if 0%{?rhel}
-/usr/bin/dracut --force
+# Only rebuild initrd on a live, booted system; skip in image-build chroots.
+if [ -d /run/systemd/system ] && [ -x /usr/bin/systemd-detect-virt ] && ! /usr/bin/systemd-detect-virt --quiet --chroot; then
+    /usr/bin/dracut --force || :
+fi
 %else
 if test -x /usr/lib/module-init-tools/regenerate-initrd-posttrans; then
         mkdir -p /run/regenerate-initrd
@@ -227,7 +231,10 @@ fi
 %posttrans dracut
 # Install firmware in initrd.
 %if 0%{?rhel}
-/usr/bin/dracut --force
+# Only rebuild initrd on a live, booted system; skip in image-build chroots.
+if [ -d /run/systemd/system ] && [ -x /usr/bin/systemd-detect-virt ] && ! /usr/bin/systemd-detect-virt --quiet --chroot; then
+    /usr/bin/dracut --force || :
+fi
 %else
 if test -x /usr/lib/module-init-tools/regenerate-initrd-posttrans; then
         mkdir -p /run/regenerate-initrd
@@ -244,7 +251,10 @@ fi
 
 %triggerin -n %{name}-dracut -- %dracut_triggers
 %if 0%{?rhel}
-/usr/bin/dracut --force
+# Only rebuild initrd on a live, booted system; skip in image-build chroots.
+if [ -d /run/systemd/system ] && [ -x /usr/bin/systemd-detect-virt ] && ! /usr/bin/systemd-detect-virt --quiet --chroot; then
+    /usr/bin/dracut --force || :
+fi
 %else
 if test -x /usr/lib/module-init-tools/regenerate-initrd-posttrans; then
         mkdir -p /run/regenerate-initrd
@@ -255,7 +265,10 @@ fi
 
 %triggerpostun -n %{name}-dracut -- %dracut_triggers
 %if 0%{?rhel}
-/usr/bin/dracut --force
+# Only rebuild initrd on a live, booted system; skip in image-build chroots.
+if [ -d /run/systemd/system ] && [ -x /usr/bin/systemd-detect-virt ] && ! /usr/bin/systemd-detect-virt --quiet --chroot; then
+    /usr/bin/dracut --force || :
+fi
 %else
 if test -x /usr/lib/module-init-tools/regenerate-initrd-posttrans; then
         mkdir -p /run/regenerate-initrd
@@ -268,3 +281,7 @@ fi
 /etc/dracut.conf.d/*.conf
 
 %changelog
+* Wed Sep 02 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.0.2
+- Guard dracut --force so it is skipped in image-build chroots.
+- Move the DKMS build/install to the posttrans scriptlet so the old module is removed first on upgrade.
+- Standardize kmod/dkms Conflicts.
