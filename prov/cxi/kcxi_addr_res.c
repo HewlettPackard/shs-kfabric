@@ -71,22 +71,27 @@ static bool valid_ipv4_address(const char *node)
  */
 static int kcxi_addr_res_node_default(const char *node)
 {
+	unsigned int idx;
+	int nic;
 	int rc;
-	unsigned int nic;
 
 	/* Return the first registered interface if node string is NULL. */
 	if (!node)
 		return kcxi_dev_first_nic();
 
 	/* Parse node as a local interface index first. */
-	rc = sscanf(node, "cxi%u", &nic);
-	if (rc == 1)
-		return kcxi_dev_index_to_addr(nic);
+	if (sscanf(node, "cxi%u", &idx) == 1)
+		return kcxi_dev_index_to_addr(idx);
 
-	/* Parse node as a base 16 (hex) value. */
-	rc = kstrtouint(node, 16, &nic);
+	rc = kstrtoint(node, 16, &nic);
 	if (rc)
 		return rc;
+
+	if (nic < 0) {
+		LOG_ERR("Invalid negative NIC address in node string '%s'",
+			node);
+		return -EINVAL;
+	}
 
 	return nic;
 }
