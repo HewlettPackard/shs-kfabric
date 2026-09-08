@@ -28,7 +28,7 @@
 %endif
 
 Name:       cray-kfabric
-Version:    1.0.2
+Version:    1.0.3
 Release:    %(echo ${BUILD_METADATA})
 Summary:    Kfabric API
 License:    GPL-2.0-only OR BSD-2-Clause
@@ -177,7 +177,8 @@ echo "${dkms_source_dir}" >> dkms-files
 
 %pre dkms
 
-# DKMS build/install runs in the posttrans scriptlet so the old module is removed first on upgrade.
+# Build in %posttrans: kfabric's unversioned .ko collides on upgrade, so build after old-pkg
+# cleanup; its %post-built dependencies (cxi-driver, sl-driver, slingshot-base-link) are ready.
 %posttrans dkms
 if [ -f /usr/libexec/dkms/common.postinst ] && [ -x /usr/libexec/dkms/common.postinst ]
 then
@@ -281,6 +282,9 @@ fi
 /etc/dracut.conf.d/*.conf
 
 %changelog
+* Mon Sep 08 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.0.3
+- Build the DKMS module in %posttrans via common.postinst (not autoinstall); runs after its
+  %post-built dependencies and avoids the unversioned-.ko upgrade collision (ENCASSINI-2814).
 * Wed Sep 02 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.0.2
 - Guard dracut --force so it is skipped in image-build chroots.
 - Move the DKMS build/install to the posttrans scriptlet so the old module is removed first on upgrade.
