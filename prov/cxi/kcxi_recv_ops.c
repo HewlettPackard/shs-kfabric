@@ -69,6 +69,9 @@ static int kcxi_msg_rx_req_cb(struct kcxi_cq *cq, struct kcxi_req_state *req,
 		return -EINVAL;
 	}
 
+	if (event_rc == C_RC_MST_CANCELLED)
+		return 0;
+
 	/* Bit used to identify if a tagged RMA write/read was issued instead
 	 * of a tagged send.
 	 */

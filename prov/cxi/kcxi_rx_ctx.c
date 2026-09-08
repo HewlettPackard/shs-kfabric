@@ -203,6 +203,18 @@ static int kcxi_rx_ctx_close(struct kfid *fid)
 		if (rc)
 			RXC_ERR(rx_ctx, "Failed to disable ptlte: rc=%d", rc);
 
+		/* Invalidate LE for all posted rx desc for this RX CTX and
+		 * prevents that posted receive from accepting further target
+		 * traffic. Outstanding unmatched receive will be completed/cancelled
+		 * with C_RC_MST_CANCELLED
+		 */
+		list_for_each_entry(cur, &rx_ctx->posted_rx_list, entry)
+			cxi_pte_le_invalidate(rx_ctx->ptlte->pte, cur->buffer_id,
+					      C_PTL_LIST_PRIORITY);
+
+		/* Flush CQ work before removing buffer-id mappings. */
+		flush_work(&cq->work);
+
 		/* Cleanup resources for any posted RX operations. */
 		list_for_each_entry_safe(cur, next, &rx_ctx->posted_rx_list,
 					 entry) {
