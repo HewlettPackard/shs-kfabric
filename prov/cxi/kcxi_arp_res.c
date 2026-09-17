@@ -24,6 +24,10 @@ unsigned int res_timeout = 5;
 module_param(res_timeout, uint, 0444);
 MODULE_PARM_DESC(res_timeout, "Address resolution timeout in seconds");
 
+#ifndef from_timer
+#define from_timer timer_container_of 
+#endif
+
 /* kCXI resolution variables. */
 static LIST_HEAD(res_list);
 static DEFINE_SPINLOCK(res_lock);
