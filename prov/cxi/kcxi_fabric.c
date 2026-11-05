@@ -296,6 +296,7 @@ int kcxi_get_src_addr(struct kcxi_addr *dest_addr, struct kcxi_addr *src_addr)
 		return rc;
 
 	src_addr->nic = rc;
+	src_addr->pid = C_PID_ANY;
 
 	return 0;
 }
@@ -325,7 +326,8 @@ static int kcxi_ep_getinfo(const char *node, const char *service,
 			   uint64_t flags, const struct kfi_info *hints,
 			   enum kfi_ep_type ep_type, struct kfi_info **info)
 {
-	struct kcxi_addr addr = {};
+	struct kcxi_addr src = {};
+	struct kcxi_addr dest = {};
 	struct kcxi_addr *src_addr = NULL;
 	struct kcxi_addr *dest_addr = NULL;
 	int rc;
@@ -334,7 +336,7 @@ static int kcxi_ep_getinfo(const char *node, const char *service,
 		if (!node && !service)
 			goto nomatch;
 
-		src_addr = &addr;
+		src_addr = &src;
 		rc = kcxi_addr_res_src_info(node, service, src_addr);
 		if (rc)
 			goto nomatch;
@@ -343,7 +345,7 @@ static int kcxi_ep_getinfo(const char *node, const char *service,
 			dest_addr = hints->dest_addr;
 	} else {
 		if (node || service) {
-			dest_addr = &addr;
+			dest_addr = &dest;
 
 			rc = kcxi_addr_res_dest_info(node, service, dest_addr);
 			if (rc)
@@ -357,7 +359,7 @@ static int kcxi_ep_getinfo(const char *node, const char *service,
 	}
 
 	if (dest_addr && !src_addr) {
-		src_addr = &addr;
+		src_addr = &src;
 		rc = kcxi_get_src_addr(dest_addr, src_addr);
 		if (rc)
 			goto nomatch;
