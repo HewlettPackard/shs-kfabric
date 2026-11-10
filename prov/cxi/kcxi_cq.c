@@ -34,9 +34,23 @@ static struct kmem_cache *cq_entry_cache;
  */
 bool kcxi_cq_saturated(struct kcxi_cq *cq)
 {
-	if (atomic_read(&cq->priority_entry_cnt) >= cq->attr.size ||
-		cq->eq_saturated) {
+	if (atomic_read(&cq->priority_entry_cnt) >= cq->attr.size)
 		return true;
+
+	/* The flag is normally cleared by the EQ progress routine, which only
+	 * runs when an event arrives. If it gets set after the last event was
+	 * drained, nothing would ever clear it and all further sends would
+	 * fail with -EAGAIN. An empty EQ is not saturated.
+	 */
+	if (cq->eq_saturated) {
+		if (!cxi_eq_empty(cq->eq)) {
+			/* Ensure EQ progress without another interrupt. */
+			queue_work_on(cq->attr.signaling_vector, kcxi_wq,
+				      &cq->work);
+			return true;
+		}
+
+		cq->eq_saturated = false;
 	}
 
 	/* Hardware will automatically update the EQ status writeback area,
