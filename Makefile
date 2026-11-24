@@ -72,7 +72,8 @@ nroff:
 	done
 
 else
-.NOTPARALLEL: tests/cxi/common/ tests/cxi/single_client/ tests/cxi/multi_client/
+# Bare: since make 4.4, listing prerequisites only serializes those targets, which Kbuild never builds
+.NOTPARALLEL:
 obj-y += kfi/
 obj-y += prov/cxi/
 #obj-y += prov/ibverbs/
